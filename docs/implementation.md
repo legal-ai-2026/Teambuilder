@@ -57,8 +57,29 @@ the standard 14-slot roster.
 `api.py`
 
 Defines FastAPI routes. `/v1/score` and `/v1/healthz` are canonical. `/score`
-and `/health` are compatibility aliases. Runtime errors from the service become
-HTTP `423` when the engine is disabled; assignment failures become HTTP `422`.
+and `/health` are compatibility aliases. `/v1/agent-runs` starts the agentic
+workflow, and `/v1/agent-runs/{run_id}` fetches the stored run. Runtime errors
+from the direct scoring service become HTTP `423` when the engine is disabled;
+assignment failures become HTTP `422`.
+
+`agent_orchestrator.py`
+
+Runs the agent workflow as typed deterministic orchestration. It creates an
+agent run, records context/retrieval/graph/tool steps, calls the roster
+recommendation tool, and ends in either `awaiting_approval`, `completed`, or
+`failed`.
+
+`agent_tools.py`
+
+Contains deterministic tools used by the orchestrator. These summarize request
+context, report pgvector and FalkorDB readiness from environment-driven
+settings, and call the roster recommendation service.
+
+`agent_store.py`
+
+Defines the agent-run repository protocol and an in-memory implementation.
+Postgres persistence should replace this repository when `DATABASE_URL` is
+configured for deployed operation.
 
 `service.py`
 

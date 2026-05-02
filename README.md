@@ -54,6 +54,8 @@ Open `http://127.0.0.1:8000/docs`.
 ## Endpoints
 
 - `POST /v1/score` - ranks candidates into a 14-slot direct-action roster by default.
+- `POST /v1/agent-runs` - runs the agentic recommendation workflow and returns an approval-ready run.
+- `GET /v1/agent-runs/{run_id}` - fetches an agent run by ID.
 - `GET /v1/healthz` - service health and kill-switch state.
 - `POST /admin/disable` - disables scoring.
 - `POST /admin/enable` - re-enables scoring after an authorized operational action.
@@ -69,3 +71,22 @@ curl -X POST http://127.0.0.1:8000/v1/score \
 ```
 
 The response includes assigned slots, second choices, TabPFN/Bayes probabilities, confidence, risk factors, fairness audit metrics, trace metadata, and one five-year career forecast.
+
+## Agentic Workflow
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/agent-runs \
+  -H 'content-type: application/json' \
+  -d '{
+    "score_request": {
+      "mission_id": "raid-tonight",
+      "candidate_count": 80,
+      "seed": 42
+    },
+    "require_human_approval": true
+  }'
+```
+
+The agent workflow records request context, retrieval readiness, graph readiness,
+the deterministic roster recommendation, and the human-approval gate. It does
+not train a model and does not make the final personnel decision.

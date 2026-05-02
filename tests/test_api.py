@@ -3,7 +3,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from system2.api import disable, enable, score, score_v1
+from system2.api import create_agent_run, disable, enable, get_agent_run, score, score_v1
 from system2.agent_orchestrator import AgentOrchestrator
 from system2.agent_store import InMemoryAgentRunRepository
 from system2.audit import AuditLog, validate_hash_chain
@@ -134,6 +134,28 @@ def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:
     ]
     assert run.steps[1].evidence["pgvector_enabled"] is True
     assert run.steps[2].evidence["falkordb_configured"] is True
+
+
+def test_agent_run_api_creates_and_fetches_run() -> None:
+    run = create_agent_run(
+        AgentRunRequest(
+            score_request=ScoreRequest(mission_id="agent-api", candidate_count=80, seed=31),
+            require_human_approval=True,
+        )
+    )
+
+    fetched = get_agent_run(run.run_id)
+
+    assert fetched == run
+    assert fetched.status is AgentRunStatus.awaiting_approval
+    assert fetched.recommendation is not None
+
+
+def test_agent_run_api_returns_404_for_missing_run() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        get_agent_run("missing")
+
+    assert exc_info.value.status_code == 404
 
 
 def test_feature_hash_excludes_protected_attributes() -> None:

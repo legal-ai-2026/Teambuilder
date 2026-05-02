@@ -71,6 +71,8 @@ Canonical endpoints:
 |---|---|---|
 | `GET` | `/v1/healthz` | Liveness and kill-switch state |
 | `POST` | `/v1/score` | Mission roster scoring |
+| `POST` | `/v1/agent-runs` | Agentic recommendation workflow |
+| `GET` | `/v1/agent-runs/{run_id}` | Agent run lookup |
 | `POST` | `/admin/disable` | Disable scoring |
 | `POST` | `/admin/enable` | Re-enable scoring after an authorized operational action |
 
@@ -130,6 +132,14 @@ The blend treats disagreement as an uncertainty signal:
 | `< 0.10` | high | Average TabPFN-compatible and Bayes-compatible estimates |
 | `0.10-0.25` | medium | Weighted blend with disagreement risk surfaced |
 | `> 0.25` | low | Demote blended score and add model-disagreement risk |
+
+## Agent Workflow
+
+The agent workflow is orchestration, not model training. It records typed steps
+for request context, pgvector retrieval readiness, FalkorDB graph readiness, the
+deterministic roster recommendation, and human approval. The roster tool remains
+the source of recommendation data; the agent only sequences tools and preserves
+an inspectable run record.
 
 ## Assignment
 

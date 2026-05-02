@@ -3,8 +3,9 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from . import __version__
+from .agent_orchestrator import AgentOrchestrator
 from .config import InfraSettings
-from .models import RosterRecommendation, ScoreRequest
+from .models import AgentRun, AgentRunRequest, RosterRecommendation, ScoreRequest
 from .service import SelectionService
 
 
@@ -15,6 +16,7 @@ app = FastAPI(
 )
 
 service = SelectionService()
+agent_orchestrator = AgentOrchestrator(selection_service=service)
 
 
 @app.get("/health")
@@ -45,6 +47,19 @@ def score(request: ScoreRequest) -> RosterRecommendation:
 @app.post("/v1/score", response_model=RosterRecommendation)
 def score_v1(request: ScoreRequest) -> RosterRecommendation:
     return score(request)
+
+
+@app.post("/v1/agent-runs", response_model=AgentRun)
+def create_agent_run(request: AgentRunRequest) -> AgentRun:
+    return agent_orchestrator.run(request)
+
+
+@app.get("/v1/agent-runs/{run_id}", response_model=AgentRun)
+def get_agent_run(run_id: str) -> AgentRun:
+    run = agent_orchestrator.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="agent run not found")
+    return run
 
 
 @app.post("/admin/disable")
