@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "system2-teambuilder-model"
+version = "0.1.0"
+description = "FastAPI demo for Ranger talent selection with uncertainty and fairness outputs."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "pydantic>=2.7",
+  "numpy>=1.26",
+  "scipy>=1.13",
+  "uvicorn[standard]>=0.29",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "httpx>=0.27",
+]
+ml = [
+  "tabpfn>=2.5",
+  "catboost>=1.2",
+  "scikit-learn>=1.5",
+  "pymc>=5.16",
+  "numpyro>=0.15",
+  "jax>=0.4",
+  "arviz>=0.18",
+  "anthropic>=0.96",
+  "duckdb>=1.0",
+  "sdv>=1.15",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+

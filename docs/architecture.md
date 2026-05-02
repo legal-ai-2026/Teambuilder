@@ -1,0 +1,273 @@
+# Architecture - Talent / Soldier Selection Engine (System 2)
+
+## Purpose
+
+Spire Talent Engine ranks soldiers for an upcoming mission and forecasts
+multi-year career trajectories. It is System 2 in the Spire flywheel.
+
+The operational demo focus is a 14-slot direct-action roster selected from 80
+available candidates. The service returns ranked assignments, second choices,
+model disagreement, confidence, risk factors, narrative justification, fairness
+audit, career forecast, and trace metadata.
+
+## Operating Context
+
+This service is advisory. It does not publish orders, slate officers, or replace
+command judgment. Commanders and career managers remain the decision makers.
+
+The core operational question is:
+
+> Given this mission, these roles, and this candidate pool, who best fits each
+> slot, and how confident are we?
+
+The career-trajectory question is secondary:
+
+> Given a soldier's record and modeled development value, what assignments,
+> schools, or promotions should be considered over a multi-year horizon?
+
+## High-Level Flow
+
+```text
+Client / Demo UI
+    |
+    | POST /score
+    v
+FastAPI
+    |
+    | validate typed ScoreRequest
+    v
+Candidate + role features
+    |
+    +--> TabPFN adapter
+    |
+    +--> Hierarchical Bayes adapter
+    |
+    v
+Disagreement-aware blender
+    |
+    v
+Hungarian assignment
+    |
+    +--> primary roster
+    +--> second-choice roster
+    |
+    v
+Fairness audit
+    |
+    v
+Narrative explanation
+    |
+    v
+RosterRecommendation + trace metadata
+```
+
+There is no chat interface and no open-ended agent loop in System 2. The flow is
+short, deterministic, and typed.
+
+## Current Scaffold
+
+The current runnable package is under `src/system2/`.
+
+It includes offline deterministic adapters for:
+
+- synthetic candidate generation
+- TabPFN-like probability estimates
+- hierarchical-Bayes-like pooled probability estimates
+- disagreement-aware blending
+- Hungarian assignment
+- second-choice roster generation
+- fairness audit
+- narrative explanation
+- five-year career forecast
+- FastAPI routes and kill switch
+
+The target production package name is `spire_talent`. Migrate incrementally when
+the project moves beyond the scaffold.
+
+## API Surface
+
+Current scaffold endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Service health and kill-switch state |
+| `POST` | `/score` | Score candidates and return a roster recommendation |
+| `POST` | `/admin/disable` | Disable scoring |
+| `POST` | `/admin/enable` | Re-enable scoring for local demos |
+
+Target versioned endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/healthz` | Liveness and dependency health |
+| `POST` | `/v1/score` | Mission roster scoring |
+| `POST` | `/v1/trajectory/forecast` | Career trajectory forecast |
+| `POST` | `/admin/disable` | Kill switch |
+| `POST` | `/admin/enable` | Demo-only re-enable |
+
+## Data Contracts
+
+Inbound request contracts must be Pydantic v2 models with `extra="forbid"` in
+the production layout.
+
+Core contracts:
+
+- `ScoreRequest`
+- `Soldier`
+- `RoleRequirement`
+- `RosterRecommendation`
+- `CandidateAssessment`
+- `RiskFactor`
+- `FairnessAudit`
+- `CareerForecast`
+- `TraceMetadata`
+
+Every recommendation must include:
+
+- `fit_score`
+- `p_success_tabpfn`
+- `p_success_bayes_mean`
+- `p_success_bayes_ci`
+- `confidence`
+- model disagreement risk when applicable
+- second choice
+- trace metadata
+
+## Model Architecture
+
+### TabPFN
+
+The production target is a TabPFN wrapper that scores each `(soldier, role)` pair
+using a fixed feature ordering from `assets/feature-spec.md`.
+
+The current scaffold uses a deterministic surrogate in `src/system2/scoring.py`
+so the demo runs without weights or GPU.
+
+### Hierarchical Bayes
+
+The production target is a PyMC non-centered hierarchical model:
+
+```text
+soldier_skill[i] ~ Normal(unit_mean[u(i)] + mos_effect[m(i)], sigma)
+unit_mean        ~ Normal(global, tau_unit)
+mos_effect       ~ Normal(0, tau_mos)
+mission_success  ~ Bernoulli(logit^-1(role_features + soldier_skill))
+```
+
+The current scaffold approximates partial pooling by unit and MOS to surface the
+same uncertainty behavior.
+
+### Blender
+
+The blender treats disagreement as signal:
+
+| Disagreement | Confidence | Behavior |
+|---|---|---|
+| `< 0.10` | high | Report a single strong fit score |
+| `0.10-0.25` | medium | Explain TabPFN/Bayes disagreement |
+| `> 0.25` | low | Demote candidate and flag risk |
+
+The LLM may explain this result but must never change scores, order, or
+assignment.
+
+## Assignment
+
+Assignments use `scipy.optimize.linear_sum_assignment`.
+
+The cost matrix is:
+
+```text
+C[i, j] = -log(p_blended(soldier_i, role_j))
+```
+
+Hard disqualifiers, such as a medic role requiring `68W`, are represented as
+large penalties. Team-composition requirements are represented by role columns.
+
+Second-choice rosters are generated by blocking chosen `(soldier, role)` pairs
+and solving again.
+
+## Fairness Architecture
+
+Protected attributes are excluded from model feature matrices. The audit module
+may read them only for fairness measurement.
+
+Required checks:
+
+- counterfactual protected-attribute flip
+- mutual-information proxy audit
+- demographic parity report
+- equalized-odds report
+
+Guardrail thresholds:
+
+- MI proxy threshold: `0.05`
+- counterfactual delta threshold: `0.05`
+- halt if more than 5 percent of candidates violate the counterfactual threshold
+
+Age can be used only with an explicit BFOQ rationale for physical-risk
+prediction in mission or course contexts.
+
+## Narrative Reasoning
+
+The narrative layer exists to explain deterministic outputs. It must not decide.
+
+Production target:
+
+- Claude Sonnet 4.5 structured outputs
+- strict Pydantic schema
+- one batched call for the roster
+- no candidate loop
+- no rank mutation
+
+Current scaffold:
+
+- deterministic template narrative in `src/system2/narrative.py`
+
+## Traceability and Audit
+
+Every response should carry:
+
+- feature hash
+- model versions
+- prompt hash or prompt version
+- seed
+- generated timestamp
+- DoD AI Ethics mapping
+
+Production should add append-only audit entries for score requests, final
+recommendations, commander overrides, and kill-switch events.
+
+## Cross-System Boundaries
+
+System 1 is the adversarial training agent. System 2 only needs its read model:
+
+- `GET /soldier/{id}/training-trajectory`
+- read-only from System 1
+- System 2 polls and caches longitudinal training features
+
+System 3 owns deployment outcomes:
+
+- `POST /v1/deployment-outcomes`
+- idempotent on `(soldier_id, mission_id)`
+- updates the feature warehouse only
+- does not retrain synchronously
+
+System 2 outbound after commander acceptance:
+
+- `POST /v1/mission/assignment`
+- pushes finalized roster to System 3
+
+System 2 should not depend on System 1 or System 3 availability during the live
+scoring path for the demo.
+
+## Safety and Governance
+
+- The service is advisory only.
+- The kill switch must block scoring.
+- Fairness checks are not optional.
+- LLM output is explanation only.
+- Recommendation traceability is mandatory.
+- Protected attributes never enter TabPFN or Bayes features.
+- Soldier identity traces should use canonical IDs or synthetic roster tokens,
+  not full name plus rank plus unit.
+

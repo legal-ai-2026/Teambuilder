@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from .audit import AuditLog
+from .calibration import calibration_bins, disagreement_histogram
+from .career import career_forecast
+from .data import default_roles, generate_soldiers
+from .fairness import fairness_audit
+from .models import RosterRecommendation, ScoreRequest, TraceMetadata
+from .narrative import build_assessment
+from .registry import DOD_AI_PRINCIPLES, MODEL_VERSIONS, prompt_hash
+from .scoring import feature_hash, score_matrix, solve_assignment
+
+
+class SelectionService:
+    def __init__(self, audit_log: AuditLog | None = None) -> None:
+        self.disabled = False
+        self.audit_log = audit_log or AuditLog()
+
+    def disable(self) -> None:
+        self.disabled = True
+        self.audit_log.append("kill_switch_changed", {"disabled": True})
+
+    def enable(self) -> None:
+        self.disabled = False
+        self.audit_log.append("kill_switch_changed", {"disabled": False})
+
+    def score(self, request: ScoreRequest) -> RosterRecommendation:
+        if self.disabled:
+            self.audit_log.append(
+                "score_request_blocked",
+                {"mission_id": request.mission_id, "candidate_count": request.candidate_count},
+            )
+            raise RuntimeError("selection engine is disabled")
+
+        self.audit_log.append(
+            "score_request_received",
+            {
+                "mission_id": request.mission_id,
+                "candidate_count": request.candidate_count,
+                "has_candidates": request.candidates is not None,
+                "seed": request.seed,
+            },
+        )
+        soldiers = request.candidates or generate_soldiers(request.candidate_count, request.seed)
+        roles = request.roles or default_roles()
+        scores = score_matrix(soldiers, roles)
+        primary_pairs = solve_assignment(soldiers, roles, scores)
+        secondary_pairs = solve_assignment(soldiers, roles, scores, blocked_pairs=set(primary_pairs))
+
+        secondary_by_slot = {slot_idx: soldier_idx for soldier_idx, slot_idx in secondary_pairs}
+        primary = [
+            build_assessment(
+                soldiers[soldier_idx],
+                roles[slot_idx],
+                scores[(soldier_idx, slot_idx)],
+                soldiers[secondary_by_slot[slot_idx]].soldier_id,
+            )
+            for soldier_idx, slot_idx in primary_pairs
+        ]
+        secondary = [
+            build_assessment(
+                soldiers[soldier_idx],
+                roles[slot_idx],
+                scores[(soldier_idx, slot_idx)],
+                None,
+            )
+            for soldier_idx, slot_idx in secondary_pairs
+        ]
+
+        best_by_soldier: dict[str, float] = {}
+        for soldier_idx, soldier in enumerate(soldiers):
+            best_by_soldier[soldier.soldier_id] = max(float(scores[(soldier_idx, slot_idx)]["fit_score"]) for slot_idx in range(len(roles)))
+
+        selected = max(primary, key=lambda item: item.fit_score)
+        selected_soldier = next(soldier for soldier in soldiers if soldier.soldier_id == selected.soldier_id)
+        fairness = fairness_audit(soldiers, best_by_soldier)
+        predictions = [best_by_soldier[soldier.soldier_id] for soldier in soldiers]
+        outcomes = [
+            int(soldier.operational_readiness >= 0.62 and soldier.medical_risk <= 0.32 and soldier.acft_score >= 500)
+            for soldier in soldiers
+        ]
+        trace = TraceMetadata(
+            model_versions=MODEL_VERSIONS,
+            feature_hash=feature_hash(soldiers, roles),
+            prompt_hash=prompt_hash(),
+            seed=request.seed,
+            dod_ai_principles=DOD_AI_PRINCIPLES,
+            calibration_bins=calibration_bins(predictions, outcomes),
+            disagreement_histogram=disagreement_histogram(primary + secondary),
+        )
+        recommendation = RosterRecommendation(
+            mission_id=request.mission_id,
+            roster=primary,
+            second_choice_roster=secondary,
+            fairness_audit=fairness,
+            career_forecast=career_forecast(selected_soldier),
+            trace=trace,
+        )
+        self.audit_log.append(
+            "fairness_outcome",
+            {
+                "mission_id": request.mission_id,
+                "status": fairness.status,
+                "proxy_features": fairness.proxy_features,
+                "counterfactual_violation_rate": fairness.counterfactual_violation_rate,
+            },
+        )
+        self.audit_log.append(
+            "recommendations_returned",
+            {
+                "mission_id": request.mission_id,
+                "feature_hash": trace.feature_hash,
+                "primary_ids": [item.soldier_id for item in primary],
+                "second_choice_ids": [item.soldier_id for item in secondary],
+            },
+        )
+        return recommendation
+
