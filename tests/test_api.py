@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from system2.api import create_agent_run, disable, enable, get_agent_run, score, score_v1
 from system2.agent_orchestrator import AgentOrchestrator
+from system2.agent_state import InMemoryAgentStateStore, RedisAgentStateStore
 from system2.agent_store import InMemoryAgentRunRepository
 from system2.audit import AuditLog, validate_hash_chain
 from system2.config import InfraSettings, redact_url
@@ -132,6 +133,27 @@ def test_postgres_agent_run_payload_round_trips() -> None:
     assert loaded == run
     assert "CREATE TABLE IF NOT EXISTS system2_agent_runs" in AGENT_RUNS_SCHEMA_SQL
     assert "payload jsonb NOT NULL" in AGENT_RUNS_SCHEMA_SQL
+
+
+def test_memory_agent_state_tracks_status_and_locks() -> None:
+    state = InMemoryAgentStateStore()
+
+    state.set_status("run-1", AgentRunStatus.running)
+
+    assert state.get_status("run-1") is AgentRunStatus.running
+    assert state.acquire_lock("run-1") is True
+    assert state.acquire_lock("run-1") is False
+
+    state.release_lock("run-1")
+
+    assert state.acquire_lock("run-1") is True
+
+
+def test_redis_agent_state_uses_scoped_keys() -> None:
+    store = RedisAgentStateStore("redis://redis.internal:6379/0", client=object(), key_prefix="test")
+
+    assert store._status_key("abc") == "test:agent-run:abc:status"
+    assert store._lock_key("abc") == "test:agent-run:abc:lock"
 
 
 def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:
