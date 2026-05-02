@@ -55,6 +55,17 @@ uvicorn system2.api:app --reload
 
 Open `http://127.0.0.1:8000/docs`.
 
+When running against deployed infrastructure, install the optional infra
+dependencies:
+
+```bash
+pip install -e ".[dev,infra]"
+```
+
+With `AGENT_REPOSITORY_BACKEND=postgres`, the app connects to `DATABASE_URL`
+through PgBouncer and initializes the agent-run table at startup. Keep
+`AGENT_REPOSITORY_BACKEND=memory` for local runs without Postgres.
+
 ## Endpoints
 
 - `POST /v1/score` - ranks candidates into a 14-slot direct-action roster by default.
@@ -94,3 +105,15 @@ curl -X POST http://127.0.0.1:8000/v1/agent-runs \
 The agent workflow records request context, retrieval readiness, graph readiness,
 the deterministic roster recommendation, and the human-approval gate. It does
 not train a model and does not make the final personnel decision.
+
+The agent stack uses these adapters:
+
+- `PostgresAgentRunRepository` for durable agent runs.
+- `RedisAgentStateStore` for ephemeral run status and distributed locks.
+- `PgVectorContextRetriever` for retrieval over externally embedded context
+  chunks.
+- `FalkorDBGraphContextProvider` for mission, role, skill, unit, policy, and
+  assignment graph facts.
+
+All infra adapters are selected by env. Local fallbacks remain available for
+development and tests.

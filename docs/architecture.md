@@ -141,6 +141,18 @@ deterministic roster recommendation, and human approval. The roster tool remains
 the source of recommendation data; the agent only sequences tools and preserves
 an inspectable run record.
 
+Runtime backend selection is environment-driven:
+
+| Backend | Env | Operational adapter | Local fallback |
+|---|---|---|---|
+| Agent runs | `AGENT_REPOSITORY_BACKEND=postgres` | Postgres JSONB repository | In-memory repository |
+| Agent state | `AGENT_STATE_BACKEND=redis` | Redis status and locks | In-memory state |
+| Retrieval | `RETRIEVAL_BACKEND=pgvector` | Postgres/pgvector context chunks | Packaged local context |
+| Graph | `GRAPH_BACKEND=falkordb` | FalkorDB graph queries | Request-local graph facts |
+
+Postgres remains canonical. Redis is only ephemeral coordination state.
+FalkorDB graph facts should be rebuildable from canonical records.
+
 ## Assignment
 
 Assignments use `scipy.optimize.linear_sum_assignment`.

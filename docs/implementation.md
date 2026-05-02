@@ -81,6 +81,35 @@ Defines the agent-run repository protocol and an in-memory implementation.
 Postgres persistence should replace this repository when `DATABASE_URL` is
 configured for deployed operation.
 
+`postgres_agent_store.py`
+
+Implements durable agent-run storage in Postgres. Runs are stored as JSONB with
+indexed `run_id`, `status`, and `mission_id` columns. The adapter imports
+`psycopg` lazily and requires the `infra` optional dependency.
+
+`agent_state.py`
+
+Defines ephemeral state storage for agent status and distributed locks. Redis is
+used when `AGENT_STATE_BACKEND=redis`; otherwise tests and local runs use the
+in-memory store.
+
+`agent_stack.py`
+
+Builds a fully wired orchestrator from `InfraSettings`. This is the composition
+root for selecting Postgres, Redis, pgvector, and FalkorDB adapters from env.
+
+`retrieval.py`
+
+Defines context retrieval. The local retriever returns packaged operational
+context. The pgvector retriever queries `system2_context_chunks` using either a
+provided embedding vector or a text fallback. It does not create embeddings.
+
+`graph.py`
+
+Defines graph context. The local provider derives basic facts from the request.
+The FalkorDB provider uses Redis protocol `GRAPH.QUERY` calls to fetch mission
+relationship facts.
+
 `service.py`
 
 Coordinates the full scoring transaction. It checks the kill switch, builds the
@@ -145,6 +174,9 @@ mapping.
 - Fairness audit results are returned on every successful score response.
 - Narrative code explains only; it does not decide.
 - Admin endpoints must be protected outside this package.
+- Agent runs end in `awaiting_approval` by default and require authorized human
+  approval before finalization.
+- Redis state must not be treated as authoritative; rebuild from Postgres.
 
 ## Synthetic Data Export
 
