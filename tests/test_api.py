@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from system2.api import disable, enable, score, score_v1
+from system2.agent_orchestrator import AgentOrchestrator
 from system2.agent_store import InMemoryAgentRunRepository
 from system2.audit import AuditLog, validate_hash_chain
 from system2.config import InfraSettings, redact_url
@@ -100,6 +101,39 @@ def test_agent_run_repository_tracks_runs() -> None:
     assert saved.status is AgentRunStatus.running
     assert saved.updated_at >= run.updated_at
     assert repository.get(run.run_id) == saved
+
+
+def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:
+    orchestrator = AgentOrchestrator(
+        repository=InMemoryAgentRunRepository(),
+        settings=InfraSettings.from_env(
+            {
+                "DATABASE_URL": "postgresql://app_user:secret@pgbouncer.internal:6432/system2",
+                "PGVECTOR_ENABLED": "true",
+                "FALKORDB_URL": "redis://falkordb.internal:6379",
+            }
+        ),
+    )
+
+    run = orchestrator.run(
+        AgentRunRequest(
+            score_request=ScoreRequest(mission_id="agent-roster", candidate_count=80, seed=7),
+            require_human_approval=True,
+        )
+    )
+
+    assert run.status is AgentRunStatus.awaiting_approval
+    assert run.recommendation is not None
+    assert len(run.recommendation.roster) == 14
+    assert [step.name for step in run.steps] == [
+        "request_context",
+        "retrieval_context",
+        "graph_context",
+        "roster_recommendation",
+        "human_approval",
+    ]
+    assert run.steps[1].evidence["pgvector_enabled"] is True
+    assert run.steps[2].evidence["falkordb_configured"] is True
 
 
 def test_feature_hash_excludes_protected_attributes() -> None:
