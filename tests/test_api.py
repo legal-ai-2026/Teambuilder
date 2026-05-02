@@ -4,11 +4,12 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from system2.api import disable, enable, score, score_v1
+from system2.agent_store import InMemoryAgentRunRepository
 from system2.audit import AuditLog, validate_hash_chain
 from system2.config import InfraSettings, redact_url
 from system2.data import default_roles, generate_soldiers
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
-from system2.models import ScoreRequest
+from system2.models import AgentRunRequest, AgentRunStatus, ScoreRequest
 from system2.registry import MODEL_VERSIONS
 from system2.scoring import feature_hash, role_fit
 from system2.service import SelectionService
@@ -82,6 +83,23 @@ def test_infra_settings_redacts_connection_urls() -> None:
     assert status["redis"]["url"] == "redis://redis.internal:6379/0"
     assert status["falkordb"]["url"] == "redis://graph_user:***@falkordb.internal:6379"
     assert redact_url(None) is None
+
+
+def test_agent_run_repository_tracks_runs() -> None:
+    repository = InMemoryAgentRunRepository()
+    request = AgentRunRequest(score_request=ScoreRequest(candidate_count=80, seed=21))
+
+    run = repository.create(request)
+
+    assert run.status is AgentRunStatus.queued
+    assert run.request.score_request.seed == 21
+    assert repository.get(run.run_id) == run
+
+    saved = repository.save(run.model_copy(update={"status": AgentRunStatus.running}))
+
+    assert saved.status is AgentRunStatus.running
+    assert saved.updated_at >= run.updated_at
+    assert repository.get(run.run_id) == saved
 
 
 def test_feature_hash_excludes_protected_attributes() -> None:

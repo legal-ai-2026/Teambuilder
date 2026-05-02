@@ -30,6 +30,21 @@ class RiskCategory(str, Enum):
     model_disagreement = "model_disagreement"
 
 
+class AgentRunStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    awaiting_approval = "awaiting_approval"
+    completed = "completed"
+    failed = "failed"
+
+
+class AgentStepStatus(str, Enum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -136,3 +151,29 @@ class RosterRecommendation(StrictBaseModel):
     fairness_audit: FairnessAudit
     career_forecast: CareerForecast
     trace: TraceMetadata
+
+
+class AgentRunRequest(StrictBaseModel):
+    objective: Literal["mission_roster_recommendation"] = "mission_roster_recommendation"
+    score_request: ScoreRequest
+    require_human_approval: bool = True
+
+
+class AgentStep(StrictBaseModel):
+    name: str
+    status: AgentStepStatus
+    summary: str
+    evidence: dict[str, object] = Field(default_factory=dict)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: datetime | None = None
+
+
+class AgentRun(StrictBaseModel):
+    run_id: str
+    status: AgentRunStatus
+    request: AgentRunRequest
+    steps: list[AgentStep]
+    recommendation: RosterRecommendation | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
