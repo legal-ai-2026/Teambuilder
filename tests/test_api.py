@@ -11,6 +11,7 @@ from system2.config import InfraSettings, redact_url
 from system2.data import default_roles, generate_soldiers
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
 from system2.models import AgentRunRequest, AgentRunStatus, ScoreRequest
+from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
 from system2.scoring import feature_hash, role_fit
 from system2.service import SelectionService
@@ -120,6 +121,17 @@ def test_agent_run_repository_tracks_runs() -> None:
     assert saved.status is AgentRunStatus.running
     assert saved.updated_at >= run.updated_at
     assert repository.get(run.run_id) == saved
+
+
+def test_postgres_agent_run_payload_round_trips() -> None:
+    repository = InMemoryAgentRunRepository()
+    run = repository.create(AgentRunRequest(score_request=ScoreRequest(candidate_count=80, seed=22)))
+
+    loaded = load_agent_run(dump_agent_run(run))
+
+    assert loaded == run
+    assert "CREATE TABLE IF NOT EXISTS system2_agent_runs" in AGENT_RUNS_SCHEMA_SQL
+    assert "payload jsonb NOT NULL" in AGENT_RUNS_SCHEMA_SQL
 
 
 def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:

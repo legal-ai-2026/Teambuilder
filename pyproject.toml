@@ -33,6 +33,10 @@ ml = [
   "duckdb>=1.0",
   "sdv>=1.15",
 ]
+infra = [
+  "psycopg[binary]>=3.2",
+  "redis>=5.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
