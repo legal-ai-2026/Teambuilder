@@ -14,6 +14,7 @@ from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_i
 from system2.models import AgentRunRequest, AgentRunStatus, ScoreRequest
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
+from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, embedding_literal
 from system2.scoring import feature_hash, role_fit
 from system2.service import SelectionService
 
@@ -154,6 +155,20 @@ def test_redis_agent_state_uses_scoped_keys() -> None:
 
     assert store._status_key("abc") == "test:agent-run:abc:status"
     assert store._lock_key("abc") == "test:agent-run:abc:lock"
+
+
+def test_local_context_retriever_returns_packaged_context() -> None:
+    contexts = LocalContextRetriever().retrieve("protected attributes", limit=1)
+
+    assert len(contexts) == 1
+    assert contexts[0].source == "assets/feature-spec.md"
+    assert "Protected attributes" in contexts[0].content
+
+
+def test_pgvector_schema_and_embedding_literal_are_stable() -> None:
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in PGVECTOR_SCHEMA_SQL
+    assert "embedding vector(1536)" in PGVECTOR_SCHEMA_SQL
+    assert embedding_literal([0.1, 0.25, 1]) == "[0.1,0.25,1]"
 
 
 def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:
