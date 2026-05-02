@@ -25,11 +25,8 @@ class Confidence(str, Enum):
 
 
 class RiskCategory(str, Enum):
-    physical = "physical"
     experience = "experience"
-    cohesion = "cohesion"
     medical = "medical"
-    fairness = "fairness"
     model_disagreement = "model_disagreement"
 
 

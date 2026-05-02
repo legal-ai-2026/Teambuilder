@@ -1,6 +1,6 @@
 # System 2 Feature Specification
 
-This dictionary is the demo contract for offline scoring, fairness evidence, and future adapter validation. Protected attributes are fairness-only and must not enter the success scorer or assignment objective.
+This dictionary is the operational contract for scoring, fairness evidence, and adapter validation. Protected attributes are fairness-only and must not enter the success scorer or assignment objective.
 
 | Feature | Type | Range | Source | Model usage | Fairness-only | Proxy risk | BFOQ rationale |
 | --- | --- | --- | --- | --- | --- | --- | --- |

@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from fastapi import HTTPException
@@ -76,7 +74,7 @@ def test_feature_hash_excludes_protected_attributes() -> None:
     assert feature_hash(flipped, roles) == baseline
 
 
-def test_counterfactual_protected_flips_do_not_change_offline_score() -> None:
+def test_counterfactual_protected_flips_do_not_change_score() -> None:
     soldiers = generate_soldiers(12, seed=5)
     role = default_roles()[0]
 
@@ -129,21 +127,19 @@ def test_fairness_group_metrics_are_populated() -> None:
     assert audit.equalized_odds_delta >= 0.0
 
 
-def test_canned_operational_request_returns_full_primary_and_secondary_rosters() -> None:
-    with open("assets/canned/operational.json", encoding="utf-8") as handle:
-        request = ScoreRequest(**json.load(handle))
-
-    payload = SelectionService().score(request)
+def test_operational_request_returns_full_primary_and_secondary_rosters() -> None:
+    payload = SelectionService().score(
+        ScoreRequest(mission_id="operational-roster", candidate_count=80, seed=7)
+    )
 
     assert len(payload.roster) == 14
     assert len(payload.second_choice_roster) == 14
 
 
-def test_high_disagreement_fixture_has_low_confidence_recommendation() -> None:
-    with open("assets/canned/high-disagreement.json", encoding="utf-8") as handle:
-        request = ScoreRequest(**json.load(handle))
-
-    payload = SelectionService().score(request)
+def test_high_disagreement_seed_has_low_confidence_recommendation() -> None:
+    payload = SelectionService().score(
+        ScoreRequest(mission_id="high-disagreement", candidate_count=80, seed=137)
+    )
 
     assert any(item.confidence.value == "low" for item in payload.roster + payload.second_choice_roster)
 

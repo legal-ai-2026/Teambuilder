@@ -132,7 +132,7 @@ def fairness_audit(soldiers: list[Soldier], fit_scores: dict[str, float]) -> Fai
     status = "halt" if counterfactual_violation_rate > 0.05 or proxy_features else "pass"
     notes = [
         "Protected attributes are excluded from scoring features.",
-        "Counterfactual protected-attribute flips are invariant in the offline scorer.",
+        "Counterfactual protected-attribute flips are invariant in the scorer.",
     ]
     if proxy_features:
         notes.append("Proxy feature audit flagged features for projection or reweighting before live use.")

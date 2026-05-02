@@ -32,17 +32,19 @@ class SelectionService:
             )
             raise RuntimeError("selection engine is disabled")
 
+        soldiers = request.candidates or generate_soldiers(request.candidate_count, request.seed)
+        roles = request.roles or default_roles()
         self.audit_log.append(
             "score_request_received",
             {
                 "mission_id": request.mission_id,
-                "candidate_count": request.candidate_count,
+                "candidate_count": len(soldiers),
+                "requested_candidate_count": request.candidate_count,
+                "role_count": len(roles),
                 "has_candidates": request.candidates is not None,
                 "seed": request.seed,
             },
         )
-        soldiers = request.candidates or generate_soldiers(request.candidate_count, request.seed)
-        roles = request.roles or default_roles()
         scores = score_matrix(soldiers, roles)
         primary_pairs = solve_assignment(soldiers, roles, scores)
         secondary_pairs = solve_assignment(soldiers, roles, scores, blocked_pairs=set(primary_pairs))
@@ -115,4 +117,3 @@ class SelectionService:
             },
         )
         return recommendation
-

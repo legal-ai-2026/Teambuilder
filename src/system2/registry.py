@@ -4,10 +4,10 @@ import hashlib
 
 
 MODEL_VERSIONS = {
-    "tabpfn_adapter": "offline-surrogate-0.2; target tabpfn>=2.5",
-    "bayes_adapter": "offline-hierarchical-surrogate-0.2; target pymc>=5.16",
+    "tabpfn_adapter": "deterministic-tabpfn-compatible-0.2",
+    "bayes_adapter": "deterministic-hierarchical-pooling-0.2",
     "assignment": "scipy.linear_sum_assignment@1",
-    "narrative_adapter": "offline-template-0.2; target structured LLM JSON",
+    "narrative_adapter": "deterministic-template-0.2",
     "prompt": "system2-roster-recommendation-v1",
     "fairness_metrics": "counterfactual-mi-group-metrics-0.1",
 }

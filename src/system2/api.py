@@ -10,7 +10,7 @@ from .service import SelectionService
 app = FastAPI(
     title="System 2 Talent Selection Engine",
     version=__version__,
-    description="Ranks Ranger candidates into mission rosters with uncertainty, fairness, and trace outputs.",
+    description="Ranks soldiers into mission rosters with uncertainty, fairness, and trace outputs.",
 )
 
 service = SelectionService()

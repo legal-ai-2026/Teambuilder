@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "system2-teambuilder-model"
 version = "0.1.0"
-description = "FastAPI demo for Ranger talent selection with uncertainty and fairness outputs."
+description = "FastAPI service for mission roster recommendations with uncertainty and fairness outputs."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -40,4 +40,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-
