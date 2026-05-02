@@ -72,6 +72,10 @@ def test_infra_settings_redacts_connection_urls() -> None:
             "REDIS_URL": "redis://:redis_secret@redis.internal:6379/0",
             "FALKORDB_URL": "redis://graph_user:graph_secret@falkordb.internal:6379",
             "PGVECTOR_ENABLED": "true",
+            "AGENT_REPOSITORY_BACKEND": "postgres",
+            "AGENT_STATE_BACKEND": "redis",
+            "RETRIEVAL_BACKEND": "pgvector",
+            "GRAPH_BACKEND": "falkordb",
             "SYSTEM2_AUDIT_LOG": "/var/log/system2/audit.jsonl",
         }
     )
@@ -83,7 +87,22 @@ def test_infra_settings_redacts_connection_urls() -> None:
     assert status["postgres"]["url"] == "postgresql://app_user:***@pgbouncer.internal:6432/system2"
     assert status["redis"]["url"] == "redis://redis.internal:6379/0"
     assert status["falkordb"]["url"] == "redis://graph_user:***@falkordb.internal:6379"
+    assert status["backends"] == {
+        "agent_repository": "postgres",
+        "agent_state": "redis",
+        "retrieval": "pgvector",
+        "graph": "falkordb",
+    }
     assert redact_url(None) is None
+
+
+def test_infra_settings_default_to_local_backends() -> None:
+    settings = InfraSettings.from_env({})
+
+    assert settings.agent_repository_backend == "memory"
+    assert settings.agent_state_backend == "memory"
+    assert settings.retrieval_backend == "local"
+    assert settings.graph_backend == "local"
 
 
 def test_agent_run_repository_tracks_runs() -> None:

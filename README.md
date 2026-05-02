@@ -33,6 +33,10 @@ DATABASE_URL=postgresql://app_user:password@pgbouncer.internal:6432/system2
 REDIS_URL=redis://:password@redis.internal:6379/0
 FALKORDB_URL=redis://:password@falkordb.internal:6379
 PGVECTOR_ENABLED=true
+AGENT_REPOSITORY_BACKEND=postgres
+AGENT_STATE_BACKEND=redis
+RETRIEVAL_BACKEND=pgvector
+GRAPH_BACKEND=falkordb
 SYSTEM2_AUDIT_LOG=/var/log/system2/audit.jsonl
 ```
 
