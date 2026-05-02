@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from system2.api import disable, enable, score, score_v1
 from system2.audit import AuditLog, validate_hash_chain
+from system2.config import InfraSettings, redact_url
 from system2.data import default_roles, generate_soldiers
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
 from system2.models import ScoreRequest
@@ -60,6 +61,27 @@ def test_kill_switch_blocks_versioned_scoring() -> None:
 def test_inbound_contract_forbids_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         ScoreRequest(candidate_count=80, unknown_field=True)
+
+
+def test_infra_settings_redacts_connection_urls() -> None:
+    settings = InfraSettings.from_env(
+        {
+            "DATABASE_URL": "postgresql://app_user:secret@pgbouncer.internal:6432/system2",
+            "REDIS_URL": "redis://:redis_secret@redis.internal:6379/0",
+            "FALKORDB_URL": "redis://graph_user:graph_secret@falkordb.internal:6379",
+            "PGVECTOR_ENABLED": "true",
+            "SYSTEM2_AUDIT_LOG": "/var/log/system2/audit.jsonl",
+        }
+    )
+
+    status = settings.status()
+
+    assert status["postgres"]["configured"] is True
+    assert status["postgres"]["pgvector_enabled"] is True
+    assert status["postgres"]["url"] == "postgresql://app_user:***@pgbouncer.internal:6432/system2"
+    assert status["redis"]["url"] == "redis://redis.internal:6379/0"
+    assert status["falkordb"]["url"] == "redis://graph_user:***@falkordb.internal:6379"
+    assert redact_url(None) is None
 
 
 def test_feature_hash_excludes_protected_attributes() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from . import __version__
+from .config import InfraSettings
 from .models import RosterRecommendation, ScoreRequest
 from .service import SelectionService
 
@@ -18,7 +19,12 @@ service = SelectionService()
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "version": __version__, "disabled": service.disabled}
+    return {
+        "status": "ok",
+        "version": __version__,
+        "disabled": service.disabled,
+        "infrastructure": InfraSettings.from_env().status(),
+    }
 
 
 @app.get("/v1/healthz")
