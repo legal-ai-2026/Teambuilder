@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from . import __version__
-from .agent_orchestrator import AgentOrchestrator
+from .agent_stack import build_agent_orchestrator
 from .config import InfraSettings
 from .models import AgentRun, AgentRunRequest, RosterRecommendation, ScoreRequest
 from .service import SelectionService
@@ -16,7 +16,7 @@ app = FastAPI(
 )
 
 service = SelectionService()
-agent_orchestrator = AgentOrchestrator(selection_service=service)
+agent_orchestrator = build_agent_orchestrator(selection_service=service)
 
 
 @app.get("/health")

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from .config import InfraSettings
+from .graph import GraphContextProvider
 from .models import AgentRunRequest, RosterRecommendation
+from .retrieval import ContextRetriever
 from .service import SelectionService
 
 
@@ -22,8 +24,9 @@ def request_context(request: AgentRunRequest) -> tuple[str, dict[str, object]]:
     )
 
 
-def retrieval_context(settings: InfraSettings) -> tuple[str, dict[str, object]]:
+def retrieval_context(settings: InfraSettings, retriever: ContextRetriever) -> tuple[str, dict[str, object]]:
     configured = settings.database_url is not None and settings.pgvector_enabled
+    contexts = retriever.retrieve("mission roster recommendation protected attributes", limit=3)
     summary = (
         "pgvector retrieval is configured for doctrine, SOP, and prior-decision context."
         if configured
@@ -34,13 +37,21 @@ def retrieval_context(settings: InfraSettings) -> tuple[str, dict[str, object]]:
         {
             "postgres_configured": settings.database_url is not None,
             "pgvector_enabled": settings.pgvector_enabled,
+            "backend": settings.retrieval_backend,
+            "retrieved_context_count": len(contexts),
+            "sources": [context.source for context in contexts],
             "context_sources": ["assets/feature-spec.md", "request"],
         },
     )
 
 
-def graph_context(settings: InfraSettings) -> tuple[str, dict[str, object]]:
+def graph_context(
+    settings: InfraSettings,
+    request: AgentRunRequest,
+    graph_provider: GraphContextProvider,
+) -> tuple[str, dict[str, object]]:
     configured = settings.falkordb_url is not None
+    facts = graph_provider.mission_context(request)
     summary = (
         "FalkorDB graph context is configured for relationship and constraint lookup."
         if configured
@@ -50,6 +61,8 @@ def graph_context(settings: InfraSettings) -> tuple[str, dict[str, object]]:
         summary,
         {
             "falkordb_configured": configured,
+            "backend": settings.graph_backend,
+            "fact_count": len(facts),
             "relationship_types": [
                 "soldier_skill",
                 "mission_role",

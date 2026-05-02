@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from system2.api import create_agent_run, disable, enable, get_agent_run, score, score_v1
 from system2.agent_orchestrator import AgentOrchestrator
 from system2.agent_state import InMemoryAgentStateStore, RedisAgentStateStore
+from system2.agent_stack import build_agent_orchestrator
 from system2.agent_store import InMemoryAgentRunRepository
 from system2.audit import AuditLog, validate_hash_chain
 from system2.config import InfraSettings, redact_url
@@ -14,6 +15,7 @@ from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_i
 from system2.models import AgentRunRequest, AgentRunStatus, ScoreRequest
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
+from system2.graph import LocalGraphContextProvider, cypher_quote, parse_falkordb_rows
 from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, embedding_literal
 from system2.scoring import feature_hash, role_fit
 from system2.service import SelectionService
@@ -169,6 +171,38 @@ def test_pgvector_schema_and_embedding_literal_are_stable() -> None:
     assert "CREATE EXTENSION IF NOT EXISTS vector" in PGVECTOR_SCHEMA_SQL
     assert "embedding vector(1536)" in PGVECTOR_SCHEMA_SQL
     assert embedding_literal([0.1, 0.25, 1]) == "[0.1,0.25,1]"
+
+
+def test_local_graph_context_provider_returns_request_facts() -> None:
+    facts = LocalGraphContextProvider().mission_context(
+        AgentRunRequest(score_request=ScoreRequest(mission_id="mission-1", candidate_count=80))
+    )
+
+    assert facts[0].subject == "mission-1"
+    assert facts[0].predicate == "uses_role_source"
+    assert cypher_quote("a'b") == "'a\\'b'"
+
+
+def test_falkordb_row_parser_handles_graph_query_rows() -> None:
+    raw = [["subject", "predicate", "object"], [["mission-1", "REQUIRES", "medic"]]]
+
+    facts = parse_falkordb_rows(raw)
+
+    assert len(facts) == 1
+    assert facts[0].object == "medic"
+    assert facts[0].metadata["backend"] == "falkordb"
+
+
+def test_agent_stack_factory_uses_local_backends_by_default() -> None:
+    orchestrator = build_agent_orchestrator(settings=InfraSettings.from_env({}))
+
+    run = orchestrator.run(
+        AgentRunRequest(score_request=ScoreRequest(mission_id="factory-local", candidate_count=80, seed=7))
+    )
+
+    assert run.status is AgentRunStatus.awaiting_approval
+    assert run.steps[1].evidence["backend"] == "local"
+    assert run.steps[2].evidence["backend"] == "local"
 
 
 def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from .agent_state import AgentStateStore, InMemoryAgentStateStore
 from .agent_store import AgentRunRepository, InMemoryAgentRunRepository
 from .agent_tools import graph_context, request_context, retrieval_context, roster_recommendation_tool
 from .config import InfraSettings
+from .graph import GraphContextProvider, LocalGraphContextProvider
 from .models import AgentRun, AgentRunRequest, AgentRunStatus, AgentStep, AgentStepStatus
+from .retrieval import ContextRetriever, LocalContextRetriever
 from .service import SelectionService
 
 
@@ -13,26 +16,36 @@ class AgentOrchestrator:
     def __init__(
         self,
         repository: AgentRunRepository | None = None,
+        state_store: AgentStateStore | None = None,
+        retriever: ContextRetriever | None = None,
+        graph_provider: GraphContextProvider | None = None,
         selection_service: SelectionService | None = None,
         settings: InfraSettings | None = None,
     ) -> None:
         self.repository = repository or InMemoryAgentRunRepository()
+        self.state_store = state_store or InMemoryAgentStateStore()
+        self.retriever = retriever or LocalContextRetriever()
+        self.graph_provider = graph_provider or LocalGraphContextProvider()
         self.selection_service = selection_service or SelectionService()
         self.settings = settings or InfraSettings.from_env()
 
     def run(self, request: AgentRunRequest) -> AgentRun:
         run = self.repository.create(request)
+        self.state_store.set_status(run.run_id, AgentRunStatus.queued)
+        if not self.state_store.acquire_lock(run.run_id):
+            raise RuntimeError("agent run is already locked")
         run = self.repository.save(run.model_copy(update={"status": AgentRunStatus.running}))
+        self.state_store.set_status(run.run_id, AgentRunStatus.running)
         steps: list[AgentStep] = []
 
         try:
             summary, evidence = request_context(request)
             steps.append(_completed_step("request_context", summary, evidence))
 
-            summary, evidence = retrieval_context(self.settings)
+            summary, evidence = retrieval_context(self.settings, self.retriever)
             steps.append(_completed_step("retrieval_context", summary, evidence))
 
-            summary, evidence = graph_context(self.settings)
+            summary, evidence = graph_context(self.settings, request, self.graph_provider)
             steps.append(_completed_step("graph_context", summary, evidence))
 
             recommendation = roster_recommendation_tool(self.selection_service, request)
@@ -62,7 +75,7 @@ class AgentOrchestrator:
             else:
                 status = AgentRunStatus.completed
 
-            return self.repository.save(
+            stored = self.repository.save(
                 run.model_copy(
                     update={
                         "status": status,
@@ -72,6 +85,8 @@ class AgentOrchestrator:
                     }
                 )
             )
+            self.state_store.set_status(stored.run_id, status)
+            return stored
         except Exception as exc:
             steps.append(
                 _completed_step(
@@ -81,7 +96,7 @@ class AgentOrchestrator:
                     status=AgentStepStatus.failed,
                 )
             )
-            return self.repository.save(
+            stored = self.repository.save(
                 run.model_copy(
                     update={
                         "status": AgentRunStatus.failed,
@@ -90,6 +105,10 @@ class AgentOrchestrator:
                     }
                 )
             )
+            self.state_store.set_status(stored.run_id, AgentRunStatus.failed)
+            return stored
+        finally:
+            self.state_store.release_lock(run.run_id)
 
     def get(self, run_id: str) -> AgentRun | None:
         return self.repository.get(run_id)
