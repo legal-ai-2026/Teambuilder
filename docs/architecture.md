@@ -10,6 +10,11 @@ factors, fairness audit, career forecast, and trace metadata.
 The service is advisory. It does not publish orders, slate personnel, or replace
 commander and career-manager judgment.
 
+Cross-application data sharing is governed by
+`docs/shared-data-contract.md`. Agent outputs must cite the Postgres rows,
+pgvector chunks, and FalkorDB facts they used so another app can validate or
+replay the decision from canonical IDs.
+
 ## Runtime Flow
 
 ```text

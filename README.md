@@ -4,6 +4,11 @@ FastAPI service for ranking soldiers into mission rosters with model disagreemen
 
 The service is operationally shaped and dependency-light. The scoring layer uses deterministic TabPFN-compatible and hierarchical-Bayes-compatible adapters behind stable contracts, so heavier model implementations can replace them without changing API behavior.
 
+For integration with the other Spire applications, share
+`docs/shared-data-contract.md`. It defines canonical IDs, shared Postgres,
+pgvector, Redis, and FalkorDB usage, source references for agent outputs, and
+append-only update storage for drift detection.
+
 ## Supporting Infrastructure
 
 The main application does not need to run in Kubernetes. Kubernetes can host the
