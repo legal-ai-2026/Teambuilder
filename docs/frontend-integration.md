@@ -93,6 +93,160 @@ The frontend should not:
 - Treat synthetic fallback data as operational truth.
 - Hide blocked recommendations; blocked cards are useful safety evidence.
 
+## Rich Dashboard Blueprint
+
+Build the frontend as a working command dashboard, not a form collection. The
+first screen should show the current mission, evidence freshness, system health,
+active recommendations, approval state, and outcome follow-up queue without
+requiring navigation.
+
+### Dashboard Shell
+
+Use a dense, operations-oriented layout:
+
+- Top command bar: mission selector, active team, current phase, backend
+  health, kill-switch state, OpenAI/fallback status, last refresh time, and
+  user role.
+- Left rail: mission timeline filters for evidence, adaptation, deployment,
+  approval, outcome, and lesson events.
+- Main workspace: tabbed mission views for `Overview`, `Deployment`,
+  `Training Adaptation`, `Operational Twin`, `Roster`, and `AAR`.
+- Right inspection drawer: source refs, agent trace, decision-quality details,
+  utility estimate, reliance guidance, and raw JSON for debugging.
+- Bottom status strip: pending approvals, escalations, failed/fallback agent
+  stages, stale evidence warnings, and unresolved controls.
+
+Avoid a marketing-style landing page. The default view should be a usable
+mission dashboard with actionable records and review controls.
+
+### Overview Tab
+
+Show a mission-level summary that helps a reviewer decide where attention is
+needed first:
+
+- Mission card: `mission_id`, team, phase, mission context summary, terrain,
+  weather, constraints, and readiness.
+- Readiness strip: platoon readiness, fatigue burden, mission tempo risk,
+  situational clarity, cohesion, and leader decision quality.
+- Active decisions: latest deployment recommendation, latest adaptation,
+  pending roster run, and any operational twin option awaiting decision.
+- Risk board: medium/high risk recommendations, critic `modify/escalate/reject`
+  counts, safety incidents, near misses, stale-source warnings, and
+  `decision_quality.readiness = "escalate"`.
+- Evidence freshness: newest processed System 1 observation, oldest source
+  used by a live recommendation, missing terrain/weather/readiness indicators,
+  and duplicate/conflicting evidence warnings.
+- Outcome queue: approved deployment recommendations or twin options that do
+  not yet have an outcome/AAR record.
+
+### Deployment Tab
+
+Make the deployment lane the richest workflow because it now has a complete
+recommendation lifecycle:
+
+- Request panel: mission context, terrain, weather, readiness, constraints, and
+  processed System 1 observations.
+- Platoon posture panel: posture, readiness score, risk level, rationale,
+  required controls, recommended option ID, and decision status.
+- Individual table: soldier ID, posture, readiness, risk, recommended role,
+  required controls, evidence refs, and exception badges.
+- Option comparison: three option cards side by side with title, option type,
+  recommendation, confidence, risk, critic status, critic reasons, utility, and
+  reliance posture.
+- Control checklist: every required control must be checked, overridden with a
+  reason, or escalated before approval.
+- Decision panel: approve, reject, escalate, selected option, approved posture,
+  actor ID, and required comment.
+- Outcome panel: observed outcome summary, commander rating, safety incident,
+  near miss, mission effectiveness estimate, accepted/overridden flag,
+  helpful/not-helpful flag, missed factor, should-have-escalated flag, and AAR
+  notes.
+- Lifecycle timeline: recommendation created, decision recorded, outcome
+  recorded, lesson drafted, with timestamps and actor IDs.
+
+Status behavior:
+
+- `pending_approval`: show decision controls and block outcome capture.
+- `approved`: show approved posture, lock the decision form, and enable outcome
+  capture.
+- `rejected`: lock outcome capture and keep the record visible for audit.
+- `escalated`: route to higher review and do not show a normal approve affordance.
+- `outcome_recorded`: show lessons learned and outcome metrics as the primary
+  record state.
+
+### Training Adaptation Tab
+
+Use this for instructor-led training changes:
+
+- Cognitive state matrix: all dimensions, current score, priority, trend,
+  confidence, and evidence refs.
+- Primary failure mode: render prominently with fatigue/load caveats so the UI
+  does not imply fixed trait judgments.
+- Recommendation cards: inject type, target dimension, proposed inject, risk,
+  learning gain, transfer value, safety checks, doctrine refs, and status.
+- Approval queue: pending, approved, rejected, and blocked injects with
+  rationale and approver.
+- AAR link: show how approved injects relate to later deployment outcomes and
+  lesson drafts when mission IDs match.
+
+### Operational Twin Tab
+
+Expose this as an advanced evidence and trace view for operators and engineers:
+
+- Evidence bundle: artifacts, observations, policy checks, hash chain, and
+  controls.
+- State estimate: state vector, uncertainty, state summary, and source refs.
+- Scenario options: draft/approved/rejected/escalated status, critic reasons,
+  decision quality, utility estimate, and reliance guidance.
+- Agent trace: stage, provider, model, status, latency, fallback reason,
+  input/output hashes, and validation failures.
+- Outcome capture: selected option outcome, instructor rating, safety incident,
+  targeted improvement, AAR notes, and lesson draft.
+
+### Roster Tab
+
+Keep this secondary to the live mission workflow:
+
+- Candidate pool and mission context.
+- Primary assignment table and second-choice table.
+- Fairness audit status, protected-attribute exclusion notes, risk factors, and
+  model disagreement.
+- Decision quality and reliance guidance.
+- Agent-run status if the durable workflow is used.
+- Approval panel for roster runs only when `status = "awaiting_approval"`.
+
+### AAR And Lessons Tab
+
+This tab should turn captured outcomes into actionable review material:
+
+- Deployment outcomes grouped by mission and team.
+- Operational twin outcomes grouped by source twin run.
+- Lesson drafts with severity, category, summary, root cause, recommended
+  training delta, and recommended mission delta.
+- Outcome quality metrics: commander/instructor rating, helpfulness, accepted
+  versus overridden, near misses, safety incidents, and should-have-escalated.
+- Export-friendly AAR view with source refs and timestamps.
+
+### Visual System
+
+Use compact, legible controls:
+
+- Badges for `status`, posture, critic status, risk level, confidence, and
+  readiness.
+- Segmented tabs for major mission views.
+- Tables for individual recommendations, roster assignments, source refs, and
+  agent traces.
+- Cards only for repeated recommendation/option/outcome items.
+- Checkboxes for required controls.
+- Selects for decision values and approved posture.
+- Text areas for rationale, comments, missed factors, and AAR notes.
+- Progress bars for readiness, confidence, risk, utility, and uncertainty.
+- Alert banners for kill switch, fallback, stale evidence, escalation, and
+  missing outcome records.
+
+Do not hide governance details behind decorative UI. The dashboard should make
+the review burden clear and fast to inspect.
+
 ## Recommended User Flows
 
 ### 1. Live Training Adaptation
@@ -132,7 +286,9 @@ Commander selects mission
   -> frontend loads processed System 1 observations, mission context, terrain, weather, readiness
   -> POST /v1/deployment-recommendations
   -> render platoon posture, individual postures, options, controls, and trace
-  -> authorized human approves outside System 2 or records the downstream decision in the owning system
+  -> POST /v1/deployment-recommendations/{deployment_recommendation_id}/approval
+  -> after execution or rehearsal, POST /v1/deployment-recommendations/{deployment_recommendation_id}/outcome
+  -> render lesson draft and AAR timeline update
 ```
 
 The frontend should have these panels:
@@ -148,6 +304,8 @@ The frontend should have these panels:
   critic reasons, decision quality, utility, and reliance posture.
 - Trace drawer: `source_twin_run_id`, source refs, agent trace hashes, fallback
   reasons, and generated timestamps.
+- Approval/outcome panel: decision form while pending, outcome/AAR form after
+  approval, and lesson draft after outcome capture.
 
 ### 3. Roster Scoring
 
@@ -203,6 +361,61 @@ Compatibility aliases also exist:
 - `POST /score`
 
 Prefer the `/v1/*` routes in new frontend code.
+
+## Dashboard Data Loading
+
+Use one mission-scoped loader that hydrates the dashboard shell, then lazy-load
+dense detail drawers.
+
+Initial mission load:
+
+```text
+GET /v1/healthz
+GET /v1/missions/{mission_id}/deployment-recommendations?limit=20
+GET /v1/missions/{mission_id}/adaptations?limit=20
+optional: POST /v1/score when the roster tab is opened
+optional: GET /v1/agent-runs/{run_id} when a roster run is selected
+```
+
+On deployment selection:
+
+```text
+GET /v1/deployment-recommendations/{deployment_recommendation_id}
+GET /v1/operational-twin/runs/{source_twin_run_id}
+```
+
+On adaptation selection:
+
+```text
+GET /v1/adaptations/{adaptation_id}
+```
+
+Polling and refresh:
+
+- Poll health every 15-30 seconds in operator views.
+- Refresh mission deployment/adaptation lists after any create, approval, or
+  outcome action.
+- Avoid polling long historical records; refresh selected details only when the
+  user opens the drawer or performs an action.
+- Preserve the selected tab, selected recommendation, and drawer state across
+  refreshes.
+
+Derived dashboard state:
+
+- `pendingApprovals`: deployment recommendations with `pending_approval`,
+  adaptations with `pending_approval`, agent runs with `awaiting_approval`, and
+  twin options with `draft`.
+- `needsOutcome`: deployment recommendations with `approved` and no outcomes,
+  plus operational twin runs with approved options and no outcomes.
+- `escalations`: deployment recommendations with `escalated`, posture
+  `escalate_review`, critic `escalate/reject`, or decision quality
+  `escalate`.
+- `fallbacks`: agent trace rows where `status` is `fallback` or `failed`.
+- `reviewRisks`: medium/high risk level, low confidence, high uncertainty,
+  missing source refs, stale evidence, near misses, and safety incidents.
+
+Frontend state should store IDs, not copies of mutable records. Re-fetch by ID
+after approval/outcome so the UI uses the backend lifecycle record.
 
 ## Cognitive Adaptation
 
@@ -593,11 +806,76 @@ Posture values:
 - `hold`: readiness or fatigue indicates the element should not deploy as-is.
 - `escalate_review`: the evidence or option set needs higher-level review.
 
+### Deployment Lifecycle Actions
+
+Fetch or refresh a stored recommendation:
+
+```http
+GET /v1/deployment-recommendations/{deployment_recommendation_id}
+```
+
+List a mission history:
+
+```http
+GET /v1/missions/{mission_id}/deployment-recommendations?limit=50
+```
+
+Record a decision:
+
+```http
+POST /v1/deployment-recommendations/{deployment_recommendation_id}/approval
+Content-Type: application/json
+```
+
+```json
+{
+  "decision": "approved",
+  "actor_id": "commander-1",
+  "selected_option_id": "option-...",
+  "approved_posture": "deploy_with_controls",
+  "comment": "Approved after reviewing controls, critic reasons, and source refs."
+}
+```
+
+Use `decision: "rejected"` when the recommendation should not be used. Use
+`decision: "escalated"` when the evidence, risk, or command context requires
+higher review. The UI should require a comment for every decision.
+
+Record the outcome/AAR after an approved recommendation:
+
+```http
+POST /v1/deployment-recommendations/{deployment_recommendation_id}/outcome
+Content-Type: application/json
+```
+
+```json
+{
+  "observed_outcome_summary": "Platoon completed the movement with controls and no safety incident.",
+  "commander_rating": 4,
+  "safety_incident": false,
+  "near_miss": false,
+  "mission_effectiveness_estimate": 0.35,
+  "recommendation_accepted": true,
+  "recommendation_helpful": true,
+  "missed_factor": null,
+  "should_have_escalated": false,
+  "aar_notes": "Comms confirmation before movement prevented a repeat relay error.",
+  "actor_id": "commander-1"
+}
+```
+
 Frontend behavior:
 
 - Treat `pending_approval` as non-final.
 - Render `required_controls` as blocking checklist items before any downstream
   approval action.
+- Approve only one selected option. Use `platoon_recommendation.recommended_option_id`
+  as the default selected option, but let the reviewer choose another option
+  with rationale.
+- When approving `deploy_with_controls`, require each control to be checked or
+  explicitly overridden with rationale.
+- When the posture is `hold` or `escalate_review`, route the decision form to
+  reject/escalate-first behavior instead of a single-click approval.
 - After a named decision, refresh the record with
   `GET /v1/deployment-recommendations/{deployment_recommendation_id}`.
 - Use the outcome endpoint after execution or rehearsal AAR to capture
@@ -1271,15 +1549,36 @@ Render:
 - `individual_recommendations`
 - `options` with critic status and reasons
 - `decision_quality`, `utility_estimate`, and `reliance_guidance`
+- `decisions`, `outcomes`, and `lessons_learned` as the lifecycle record
 
 Button logic:
 
 - If `status = "pending_approval"`, require named human review before
   downstream execution.
+- If `status = "approved"`, lock the decision form and show the outcome/AAR
+  form.
+- If `status = "rejected"` or `status = "escalated"`, lock outcome capture and
+  keep the record visible in timeline/history views.
+- If `status = "outcome_recorded"`, show the outcome and lesson draft before
+  the original recommendation.
 - If posture is `hold` or `escalate_review`, block any simple approve action
   and route to the escalation workflow.
 - If posture is `deploy_with_controls`, require every control to be checked or
   explicitly overridden with rationale.
+
+### Dashboard Alert Rules
+
+Show prominent alerts when any of these are true:
+
+- `health.disabled = true`
+- any agent trace has `status = "fallback"` or `status = "failed"`
+- `decision_quality.readiness = "escalate"`
+- `reliance_guidance.posture = "defer_for_more_info"` or `"escalate"`
+- deployment posture is `hold` or `escalate_review`
+- critic status is `escalate` or `reject`
+- source refs are missing for a recommendation
+- a deployment recommendation is `approved` but has no outcome
+- an outcome has `safety_incident`, `near_miss`, or `should_have_escalated`
 
 ### Timeline
 
