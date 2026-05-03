@@ -1,7 +1,6 @@
 when:
   branch: main
   event: push
-
 steps:
   - name: test
     image: python:3.11-slim
@@ -35,22 +34,21 @@ steps:
           DESIRED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.spec.replicas}')
           UPDATED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.updatedReplicas}')
           AVAILABLE=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.availableReplicas}')
-          if [ "${OBSERVED:-0}" = "${GENERATION:-1}" ] && [ "${UPDATED:-0}" = "${DESIRED:-1}" ] && [ "${AVAILABLE:-0}" = "${DESIRED:-1}" ]; then
+          if [ -z "$DESIRED" ]; then DESIRED=1; fi
+          if [ -z "$UPDATED" ]; then UPDATED=0; fi
+          if [ -z "$AVAILABLE" ]; then AVAILABLE=0; fi
+          if [ -z "$GENERATION" ]; then GENERATION=1; fi
+          if [ -z "$OBSERVED" ]; then OBSERVED=0; fi
+          echo "deployment status generation=$GENERATION observed=$OBSERVED desired=$DESIRED updated=$UPDATED available=$AVAILABLE"
+          if [ "$OBSERVED" = "$GENERATION" ] && [ "$UPDATED" = "$DESIRED" ] && [ "$AVAILABLE" = "$DESIRED" ]; then
             kubectl get deployment/teambuilder --namespace=staging
             exit 0
           fi
           i=$((i + 1))
           sleep 5
         done
-        GENERATION=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.metadata.generation}')
-        OBSERVED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.observedGeneration}')
-        DESIRED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.spec.replicas}')
-        UPDATED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.updatedReplicas}')
-        AVAILABLE=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.availableReplicas}')
         kubectl get deployment/teambuilder --namespace=staging
-        if [ "${OBSERVED:-0}" = "${GENERATION:-1}" ] && [ "${UPDATED:-0}" = "${DESIRED:-1}" ] && [ "${AVAILABLE:-0}" = "${DESIRED:-1}" ]; then
-          exit 0
-        fi
+        kubectl get pods --namespace=staging -l app=teambuilder
         exit 1
     environment:
       K8S_TOKEN:
