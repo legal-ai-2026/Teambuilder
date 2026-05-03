@@ -919,12 +919,13 @@ The current System 2 implementation already writes:
   and `deployment_outcomes_current`
 - retrieval and graph source refs on direct `/v1/score` and agent-run
   recommendations
+- bounded contextual scoring adjustments derived from retrieved fatigue/safety
+  context and graph `requires_skill` relationships
 
 The following are contract requirements still to implement:
 
-- Richer scoring features derived directly from retrieved doctrine/SOP text and
-  graph relationships, beyond the current source refs and candidate projection
-  enrichment.
+- Broader validated context transforms for weather, terrain, qualifications,
+  unit history, and prior assignment relationships.
 
 ## Postgres Tables
 

@@ -318,8 +318,11 @@ and hashes. In Postgres mode, missing pools fail the request instead of silently
 scoring generated candidates.
 
 Direct `/v1/score` calls now also attach retrieval and graph source refs from
-the configured pgvector and FalkorDB adapters. Agent runs already attach those
-refs through their context steps.
+the configured pgvector and FalkorDB adapters. Agent runs attach those refs
+through their context steps. Both paths convert supported context into bounded
+scoring adjustments, currently graph `requires_skill` relationships and
+fatigue/safety retrieval context, and record those transforms in
+`trace.context_adjustments`.
 
 Audit logging is hash-chained. The file backend writes redacted JSONL records.
 The Postgres backend writes the same canonical record into `system2_audit_log`.

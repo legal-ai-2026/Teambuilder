@@ -8,6 +8,7 @@ from collections import defaultdict
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from .context_features import ContextAdjustment, pair_context_delta
 from .models import Confidence, RoleRequirement, Soldier
 
 
@@ -26,10 +27,18 @@ def sigmoid(value: float) -> float:
     return 1 / (1 + math.exp(-value))
 
 
-def feature_hash(soldiers: list[Soldier], roles: list[RoleRequirement]) -> str:
+def feature_hash(
+    soldiers: list[Soldier],
+    roles: list[RoleRequirement],
+    context_adjustments: list[ContextAdjustment] | None = None,
+) -> str:
     payload = {
         "soldiers": [soldier.model_dump(exclude={"protected_race", "protected_gender"}) for soldier in soldiers],
         "roles": [role.model_dump() for role in roles],
+        "context_adjustments": [
+            adjustment.trace_dict()
+            for adjustment in (context_adjustments or [])
+        ],
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
@@ -96,7 +105,12 @@ def blend(tabpfn: float, bayes: float) -> tuple[float, Confidence]:
     return float(max(tabpfn * 0.45 + bayes * 0.55 - 0.10, 0.01)), Confidence.low
 
 
-def score_matrix(soldiers: list[Soldier], roles: list[RoleRequirement]) -> dict[tuple[int, int], dict[str, object]]:
+def score_matrix(
+    soldiers: list[Soldier],
+    roles: list[RoleRequirement],
+    context_adjustments: list[ContextAdjustment] | None = None,
+) -> dict[tuple[int, int], dict[str, object]]:
+    context_adjustments = context_adjustments or []
     unit_means, mos_effects = pooled_effects(soldiers)
     scores: dict[tuple[int, int], dict[str, object]] = {}
     for i, soldier in enumerate(soldiers):
@@ -104,13 +118,18 @@ def score_matrix(soldiers: list[Soldier], roles: list[RoleRequirement]) -> dict[
             p_tab = tabpfn_probability(soldier, role)
             p_bayes, ci = bayes_probability(soldier, role, unit_means, mos_effects)
             p_blended, confidence = blend(p_tab, p_bayes)
+            context_delta, applied_adjustments = pair_context_delta(soldier, role, context_adjustments)
+            adjusted_fit = float(np.clip(p_blended + context_delta, 0.01, 0.99))
             disqualified = role.required_mos is not None and soldier.mos != role.required_mos
             disqualified = disqualified or soldier.acft_score < role.min_acft
             scores[(i, j)] = {
                 "p_tabpfn": p_tab,
                 "p_bayes": p_bayes,
                 "bayes_ci": ci,
-                "fit_score": p_blended,
+                "fit_score": adjusted_fit,
+                "base_fit_score": p_blended,
+                "context_delta": context_delta,
+                "context_adjustment_ids": applied_adjustments,
                 "confidence": confidence,
                 "disqualified": disqualified,
             }
@@ -137,4 +156,3 @@ def solve_assignment(
     if len(pairs) != len(roles):
         raise ValueError("Unable to fill all role slots with qualified candidates")
     return sorted(pairs, key=lambda item: item[1])
-

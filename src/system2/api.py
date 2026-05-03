@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .agent_stack import build_adaptation_repository, build_agent_orchestrator, build_selection_service
-from .agent_tools import graph_context, retrieval_context
+from .agent_tools import ContextualScoringInput, contextual_scoring_input
 from .config import InfraSettings
 from .cognitive import CognitiveAdaptationService
 from .models import (
@@ -86,8 +86,12 @@ def score(
     _auth: None = Depends(api_key_guard.require_api_key),
 ) -> RosterRecommendation:
     try:
-        recommendation = service.score(request)
-        recommendation = attach_source_refs(recommendation, _direct_score_context_refs(request))
+        context_input = _direct_score_context_input(request)
+        recommendation = service.score(request, context_adjustments=context_input.adjustments)
+        recommendation = attach_source_refs(
+            recommendation,
+            [SourceReference.model_validate(ref) for ref in context_input.source_refs],
+        )
         agent_orchestrator.shared_data_sink.record_decision_snapshot(
             build_direct_score_decision_snapshot(request, recommendation)
         )
@@ -232,16 +236,10 @@ def enable(_auth: None = Depends(api_key_guard.require_admin_key)) -> dict[str, 
     return {"disabled": service.disabled}
 
 
-def _direct_score_context_refs(request: ScoreRequest) -> list[SourceReference]:
+def _direct_score_context_input(request: ScoreRequest) -> ContextualScoringInput:
     agent_request = AgentRunRequest(score_request=request, require_human_approval=False)
-    refs: list[SourceReference] = []
-    for _, evidence in (
-        retrieval_context(api_settings, agent_orchestrator.retriever),
-        graph_context(api_settings, agent_request, agent_orchestrator.graph_provider),
-    ):
-        raw_refs = evidence.get("source_refs", [])
-        if not isinstance(raw_refs, list):
-            continue
-        for raw_ref in raw_refs:
-            refs.append(SourceReference.model_validate(raw_ref))
-    return refs
+    return contextual_scoring_input(
+        agent_request,
+        agent_orchestrator.retriever,
+        agent_orchestrator.graph_provider,
+    )

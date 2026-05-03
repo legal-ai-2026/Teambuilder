@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .config import InfraSettings
+from .context_features import ContextAdjustment, extract_context_adjustments
 from .graph import GraphContextProvider, GraphFact
 from .models import AgentRunRequest, RosterRecommendation
 from .retrieval import ContextRetriever, RetrievedContext
 from .service import SelectionService
 from .shared_data import canonical_hash
+
+
+@dataclass(frozen=True)
+class ContextualScoringInput:
+    adjustments: list[ContextAdjustment]
+    source_refs: list[dict[str, object]]
+    contexts: list[RetrievedContext]
+    facts: list[GraphFact]
 
 
 def request_context(request: AgentRunRequest) -> tuple[str, dict[str, object]]:
@@ -31,9 +42,14 @@ def request_context(request: AgentRunRequest) -> tuple[str, dict[str, object]]:
     )
 
 
-def retrieval_context(settings: InfraSettings, retriever: ContextRetriever) -> tuple[str, dict[str, object]]:
+def retrieval_context(
+    settings: InfraSettings,
+    retriever: ContextRetriever,
+    *,
+    contexts: list[RetrievedContext] | None = None,
+) -> tuple[str, dict[str, object]]:
     configured = settings.database_url is not None and settings.pgvector_enabled
-    contexts = retriever.retrieve("mission roster recommendation protected attributes", limit=3)
+    contexts = contexts if contexts is not None else retrieval_context_items(retriever)
     summary = (
         "pgvector retrieval is configured for doctrine, SOP, and prior-decision context."
         if configured
@@ -57,9 +73,11 @@ def graph_context(
     settings: InfraSettings,
     request: AgentRunRequest,
     graph_provider: GraphContextProvider,
+    *,
+    facts: list[GraphFact] | None = None,
 ) -> tuple[str, dict[str, object]]:
     configured = settings.falkordb_url is not None
-    facts = graph_provider.mission_context(request)
+    facts = facts if facts is not None else graph_context_facts(request, graph_provider)
     summary = (
         "FalkorDB graph context is configured for relationship and constraint lookup."
         if configured
@@ -86,8 +104,39 @@ def graph_context(
 def roster_recommendation_tool(
     selection_service: SelectionService,
     request: AgentRunRequest,
+    *,
+    context_adjustments: list[ContextAdjustment] | None = None,
 ) -> RosterRecommendation:
-    return selection_service.score(request.score_request)
+    return selection_service.score(request.score_request, context_adjustments=context_adjustments)
+
+
+def contextual_scoring_input(
+    request: AgentRunRequest,
+    retriever: ContextRetriever,
+    graph_provider: GraphContextProvider,
+) -> ContextualScoringInput:
+    contexts = retrieval_context_items(retriever)
+    facts = graph_context_facts(request, graph_provider)
+    return ContextualScoringInput(
+        adjustments=extract_context_adjustments(contexts, facts),
+        source_refs=[
+            *[_context_source_ref(context) for context in contexts],
+            *[_graph_source_ref(fact) for fact in facts],
+        ],
+        contexts=contexts,
+        facts=facts,
+    )
+
+
+def retrieval_context_items(retriever: ContextRetriever) -> list[RetrievedContext]:
+    return retriever.retrieve("mission roster recommendation protected attributes", limit=3)
+
+
+def graph_context_facts(
+    request: AgentRunRequest,
+    graph_provider: GraphContextProvider,
+) -> list[GraphFact]:
+    return graph_provider.mission_context(request)
 
 
 def _context_source_ref(context: RetrievedContext) -> dict[str, object]:

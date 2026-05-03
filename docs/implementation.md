@@ -245,19 +245,29 @@ The FalkorDB provider uses Redis protocol `GRAPH.QUERY` calls to fetch mission
 relationship facts. Both providers support upserting derived graph facts. Graph
 ingestion also writes an update event.
 
+`context_features.py`
+
+Converts retrieved context and graph facts into bounded scoring adjustments.
+Graph `requires_skill` facts currently map to role/competency-specific
+adjustments, and retrieved fatigue/safety context can penalize high-fatigue
+candidates. Each adjustment is capped in `scoring.py`, recorded in
+`trace.context_adjustments`, and included in the protected-attribute-excluding
+feature hash.
+
 `service.py`
 
 Coordinates the full scoring transaction. It checks the kill switch, builds the
-candidate/role inputs, computes scores, solves primary and secondary rosters,
-runs fairness audits, builds trace metadata, writes audit records, and returns a
-`RosterRecommendation`.
+candidate/role inputs, computes context-adjusted scores, solves primary and
+secondary rosters, runs fairness audits, builds trace metadata, writes audit
+records, and returns a `RosterRecommendation`.
 
 `models.py`
 
 Holds the Pydantic contracts. All models inherit strict extra-field rejection.
 Response models include uncertainty, model disagreement, fairness, career, and
-trace fields. Trace metadata includes `source_refs` and `input_source_hashes`
-so each recommendation can be tied back to the data it used.
+trace fields. Trace metadata includes `source_refs`, `input_source_hashes`, and
+`context_adjustments` so each recommendation can be tied back to the data and
+bounded context transforms it used.
 
 `data.py`
 

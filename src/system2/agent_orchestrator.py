@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 
 from .agent_state import AgentStateStore, InMemoryAgentStateStore
 from .agent_store import AgentRunRepository, InMemoryAgentRunRepository
-from .agent_tools import graph_context, request_context, retrieval_context, roster_recommendation_tool
+from .agent_tools import (
+    contextual_scoring_input,
+    graph_context,
+    request_context,
+    retrieval_context,
+    roster_recommendation_tool,
+)
 from .config import InfraSettings
 from .graph import GraphContextProvider, LocalGraphContextProvider
 from .models import (
@@ -61,13 +67,28 @@ class AgentOrchestrator:
             summary, evidence = request_context(request)
             steps.append(_completed_step("request_context", summary, evidence))
 
-            summary, evidence = retrieval_context(self.settings, self.retriever)
+            context_input = contextual_scoring_input(request, self.retriever, self.graph_provider)
+
+            summary, evidence = retrieval_context(
+                self.settings,
+                self.retriever,
+                contexts=context_input.contexts,
+            )
             steps.append(_completed_step("retrieval_context", summary, evidence))
 
-            summary, evidence = graph_context(self.settings, request, self.graph_provider)
+            summary, evidence = graph_context(
+                self.settings,
+                request,
+                self.graph_provider,
+                facts=context_input.facts,
+            )
             steps.append(_completed_step("graph_context", summary, evidence))
 
-            recommendation = roster_recommendation_tool(self.selection_service, request)
+            recommendation = roster_recommendation_tool(
+                self.selection_service,
+                request,
+                context_adjustments=context_input.adjustments,
+            )
             recommendation = attach_source_refs(recommendation, _step_source_refs(steps))
             steps.append(
                 _completed_step(
@@ -79,6 +100,7 @@ class AgentOrchestrator:
                         "second_choice_count": len(recommendation.second_choice_roster),
                         "fairness_status": recommendation.fairness_audit.status,
                         "feature_hash": recommendation.trace.feature_hash,
+                        "context_adjustment_count": len(context_input.adjustments),
                     },
                 )
             )

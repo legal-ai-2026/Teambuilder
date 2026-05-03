@@ -285,6 +285,7 @@ class TraceMetadata(StrictBaseModel):
     disagreement_histogram: list[dict[str, float | int]] = Field(default_factory=list)
     source_refs: list[SourceReference] = Field(default_factory=list)
     input_source_hashes: dict[str, str] = Field(default_factory=dict)
+    context_adjustments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RosterRecommendation(StrictBaseModel):

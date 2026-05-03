@@ -1017,8 +1017,9 @@ For production:
 - Built-in auth is API-key only; it does not provide user identity, roles, or
   per-mission authorization.
 - Training and deployment enrichment depends on shared projections being
-  populated. Retrieval and graph context are attached as source refs; richer
-  scoring transforms from those facts are still future work.
+  populated. Retrieval and graph context can create bounded scoring adjustments,
+  but broader weather, terrain, qualification, and unit-history transforms are
+  still future work.
 
 ## Minimum Frontend Demo Cut
 

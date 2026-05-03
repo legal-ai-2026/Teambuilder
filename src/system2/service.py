@@ -4,6 +4,7 @@ from .audit import AuditLog, AuditSink
 from .calibration import calibration_bins, disagreement_histogram
 from .candidate_pool import CandidatePoolResolver, InMemoryCandidatePoolResolver
 from .career import career_forecast
+from .context_features import ContextAdjustment, context_adjustment_trace
 from .data import default_roles, generate_soldiers
 from .fairness import fairness_audit
 from .models import RoleRequirement, RosterRecommendation, ScoreRequest, Soldier, SourceReference, TraceMetadata
@@ -31,7 +32,12 @@ class SelectionService:
         self.disabled = False
         self.audit_log.append("kill_switch_changed", {"disabled": False})
 
-    def score(self, request: ScoreRequest) -> RosterRecommendation:
+    def score(
+        self,
+        request: ScoreRequest,
+        context_adjustments: list[ContextAdjustment] | None = None,
+    ) -> RosterRecommendation:
+        context_adjustments = context_adjustments or []
         if self.disabled:
             self.audit_log.append(
                 "score_request_blocked",
@@ -51,13 +57,14 @@ class SelectionService:
                 "candidate_pool_id": request.candidate_pool_id,
                 "candidate_pool_resolved": candidate_pool_resolved,
                 "seed": request.seed,
+                "context_adjustment_count": len(context_adjustments),
             },
         )
         if len(soldiers) < len(roles):
             raise ValueError(
                 f"candidate pool has {len(soldiers)} candidates but {len(roles)} roles must be filled"
             )
-        scores = score_matrix(soldiers, roles)
+        scores = score_matrix(soldiers, roles, context_adjustments=context_adjustments)
         primary_pairs = solve_assignment(soldiers, roles, scores)
         secondary_pairs = solve_assignment(soldiers, roles, scores, blocked_pairs=set(primary_pairs))
 
@@ -95,12 +102,13 @@ class SelectionService:
         ]
         trace = TraceMetadata(
             model_versions=MODEL_VERSIONS,
-            feature_hash=feature_hash(soldiers, roles),
+            feature_hash=feature_hash(soldiers, roles, context_adjustments=context_adjustments),
             prompt_hash=prompt_hash(),
             seed=request.seed,
             dod_ai_principles=DOD_AI_PRINCIPLES,
             calibration_bins=calibration_bins(predictions, outcomes),
             disagreement_histogram=disagreement_histogram(primary + secondary),
+            context_adjustments=context_adjustment_trace(context_adjustments),
         )
         source_refs = score_request_source_refs(
             request,
@@ -137,6 +145,7 @@ class SelectionService:
             {
                 "mission_id": request.mission_id,
                 "feature_hash": trace.feature_hash,
+                "context_adjustment_count": len(context_adjustments),
                 "primary_ids": [item.soldier_id for item in primary],
                 "second_choice_ids": [item.soldier_id for item in secondary],
             },

@@ -45,6 +45,7 @@ from system2.candidate_pool import (
     build_local_candidate_pool_source_refs,
 )
 from system2.config import InfraSettings, redact_url
+from system2.context_features import extract_context_adjustments
 from system2.cognitive import CognitiveAdaptationService
 from system2.data import default_roles, generate_soldiers
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
@@ -66,9 +67,9 @@ from system2.models import (
 )
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
-from system2.graph import LocalGraphContextProvider, cypher_identifier, cypher_quote, parse_falkordb_rows
+from system2.graph import GraphFact, LocalGraphContextProvider, cypher_identifier, cypher_quote, parse_falkordb_rows
 from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, PgVectorContextRetriever, embedding_literal
-from system2.scoring import feature_hash, role_fit
+from system2.scoring import feature_hash, role_fit, score_matrix
 from system2.security import ApiKeyGuard
 from system2.service import SelectionService
 from system2.shared_data import (
@@ -658,6 +659,48 @@ def test_graph_ingest_api_uses_configured_provider() -> None:
     assert result.fact_count == 1
 
 
+def test_contextual_graph_skill_adjusts_role_fit() -> None:
+    role = RoleRequirement(slot_id="COMMS-1", role="comms")
+    high_skill = generate_soldiers(1, seed=71)[0].model_copy(
+        update={
+            "acft_score": 450,
+            "operational_readiness": 0.55,
+            "sandbox_score": 0.5,
+            "medical_risk": 0.2,
+            "fatigue_index": 0.3,
+            "competencies": {"communication": 5, "equipment_mastery": 5},
+        }
+    )
+    low_skill = high_skill.model_copy(
+        update={
+            "soldier_id": "LOW-SKILL",
+            "competencies": {"communication": 1, "equipment_mastery": 1},
+        }
+    )
+    adjustments = extract_context_adjustments(
+        [],
+        [
+            GraphFact(
+                subject="contextual-mission",
+                predicate="requires_skill",
+                object="comms_coordination",
+                metadata={"fact_id": "ctx-comms"},
+            )
+        ],
+    )
+
+    high_base = score_matrix([high_skill], [role])[(0, 0)]
+    high_adjusted = score_matrix([high_skill], [role], context_adjustments=adjustments)[(0, 0)]
+    low_base = score_matrix([low_skill], [role])[(0, 0)]
+    low_adjusted = score_matrix([low_skill], [role], context_adjustments=adjustments)[(0, 0)]
+
+    assert high_adjusted["context_delta"] > 0
+    assert high_adjusted["fit_score"] > high_base["fit_score"]
+    assert low_adjusted["context_delta"] < 0
+    assert low_adjusted["fit_score"] < low_base["fit_score"]
+    assert high_adjusted["context_adjustment_ids"] == [adjustments[0].adjustment_id]
+
+
 def test_falkordb_row_parser_handles_graph_query_rows() -> None:
     raw = [["subject", "predicate", "object"], [["mission-1", "REQUIRES", "medic"]]]
 
@@ -711,6 +754,31 @@ def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:
     ]
     assert run.steps[1].evidence["pgvector_enabled"] is True
     assert run.steps[2].evidence["falkordb_configured"] is True
+
+
+def test_agent_orchestrator_records_contextual_scoring_adjustments() -> None:
+    orchestrator = AgentOrchestrator(
+        repository=InMemoryAgentRunRepository(),
+        graph_provider=LocalGraphContextProvider(
+            [
+                GraphFact(
+                    subject="context-agent",
+                    predicate="requires_skill",
+                    object="comms_coordination",
+                    metadata={"fact_id": "context-agent-comms"},
+                )
+            ]
+        ),
+    )
+
+    run = orchestrator.run(
+        AgentRunRequest(score_request=ScoreRequest(mission_id="context-agent", candidate_count=80, seed=7))
+    )
+
+    assert run.recommendation is not None
+    assert run.recommendation.trace.context_adjustments
+    assert run.recommendation.trace.context_adjustments[0]["category"] == "skill_requirement"
+    assert run.steps[3].evidence["context_adjustment_count"] == 1
 
 
 def test_agent_orchestrator_records_human_approval() -> None:
@@ -1019,6 +1087,41 @@ def test_counterfactual_protected_flips_do_not_change_score() -> None:
 
     assert violation_rate == 0.0
     assert max(deltas) == 0.0
+
+
+def test_contextual_scoring_excludes_protected_attributes() -> None:
+    role = RoleRequirement(slot_id="TL-CTX", role="team_leader")
+    soldier = generate_soldiers(1, seed=19)[0].model_copy(
+        update={
+            "competencies": {
+                "knowledge_application": 5,
+                "decision_under_stress": 5,
+                "leadership_team_cohesion": 5,
+            },
+            "protected_race": "group_a",
+            "protected_gender": "female",
+        }
+    )
+    flipped = soldier.model_copy(
+        update={
+            "protected_race": "group_b",
+            "protected_gender": "male",
+        }
+    )
+    adjustments = extract_context_adjustments(
+        [],
+        [GraphFact(subject="protected-context", predicate="requires_skill", object="systems_thinking")],
+    )
+
+    baseline = score_matrix([soldier], [role], context_adjustments=adjustments)[(0, 0)]
+    counterfactual = score_matrix([flipped], [role], context_adjustments=adjustments)[(0, 0)]
+
+    assert counterfactual["fit_score"] == pytest.approx(baseline["fit_score"])
+    assert feature_hash([soldier], [role], context_adjustments=adjustments) == feature_hash(
+        [flipped],
+        [role],
+        context_adjustments=adjustments,
+    )
 
 
 def test_mutual_information_proxy_audit_flags_correlated_proxy() -> None:

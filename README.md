@@ -203,6 +203,8 @@ Postgres candidate-pool scoring also reads `training_observations_current` and
 `deployment_outcomes_current` to enrich bounded readiness, fatigue, milestone,
 competency, and prior-mission features before scoring. Direct score responses
 include retrieval and graph source refs when those adapters are configured.
+Supported context can also apply bounded scoring adjustments, recorded in
+`trace.context_adjustments`.
 
 ## Agentic Workflow
 
