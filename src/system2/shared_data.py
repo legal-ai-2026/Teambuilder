@@ -313,6 +313,31 @@ def build_decision_snapshot(run: AgentRun) -> dict[str, Any]:
     }
 
 
+def build_direct_score_decision_snapshot(
+    request: ScoreRequest,
+    recommendation: RosterRecommendation,
+) -> dict[str, Any]:
+    run_id = f"direct-score-{uuid4()}"
+    recommendation_payload = recommendation.model_dump(mode="json")
+    return {
+        "snapshot_id": f"snapshot-{uuid4()}",
+        "run_id": run_id,
+        "mission_id": request.mission_id,
+        "request_hash": canonical_hash(request.model_dump(mode="json")),
+        "input_source_hashes": recommendation.trace.input_source_hashes,
+        "output_hash": canonical_hash(recommendation_payload),
+        "fairness_hash": canonical_hash(recommendation.fairness_audit.model_dump(mode="json")),
+        "created_at": datetime.now(UTC),
+        "payload": {
+            "run_id": run_id,
+            "status": "returned",
+            "request": request.model_dump(mode="json"),
+            "recommendation": recommendation_payload,
+            "source_refs": [ref.model_dump(mode="json") for ref in recommendation.trace.source_refs],
+        },
+    }
+
+
 def build_approval_update_event(run: AgentRun) -> dict[str, Any]:
     if run.approval is None or run.recommendation is None:
         raise ValueError("approval update events require approval and recommendation")
@@ -355,6 +380,36 @@ def build_approval_update_event(run: AgentRun) -> dict[str, Any]:
         "recorded_at": datetime.now(UTC),
         "actor_id": run.approval.approver_id,
         "reason": run.approval.rationale,
+    }
+
+
+def build_kill_switch_update_event(
+    *,
+    disabled: bool,
+    actor_id: str = "system2-admin",
+    reason: str | None = None,
+) -> dict[str, Any]:
+    previous_payload = {"disabled": not disabled}
+    new_payload = {"disabled": disabled}
+    operation = "disable" if disabled else "enable"
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "system_control",
+        "entity_id": "system2.kill_switch",
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": "system2.kill_switch",
+        "operation": operation,
+        "event_payload": {
+            "control": "kill_switch",
+            "disabled": disabled,
+            "service": SYSTEM2_APP_ID,
+        },
+        "previous_source_hash": canonical_hash(previous_payload),
+        "new_source_hash": canonical_hash(new_payload),
+        "observed_at": datetime.now(UTC),
+        "recorded_at": datetime.now(UTC),
+        "actor_id": actor_id,
+        "reason": reason or f"System 2 kill switch {operation}d.",
     }
 
 

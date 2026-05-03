@@ -718,12 +718,12 @@ facts, approvals, and drift snapshots.
 |---|---|---|---|---|---|
 | Cognitive adaptation | `POST /v1/adaptations` | `system2_adaptations`, `system2_audit_log`, `entity_update_events` | reads context chunks | none now | none |
 | Adaptation approval | `POST /v1/adaptations/{adaptation_id}/approval` | `system2_audit_log`, `entity_update_events` | none | optional scenario facts after approval | none |
-| Direct score | `POST /v1/score` | `system2_audit_log`; future `decision_snapshots` | none | none | none |
+| Direct score | `POST /v1/score` | `system2_audit_log`, `decision_snapshots` | none | none | none |
 | Agent run create | `POST /v1/agent-runs` | `system2_agent_runs`, `system2_audit_log`, `decision_snapshots` | none | none | `system2:agent-run:{run_id}:status`, lock |
 | Agent approval | `POST /v1/agent-runs/{run_id}/approval` | `system2_agent_runs`, `system2_audit_log`, `entity_update_events` | none | optional assignment facts after approval | status update |
 | Context ingest | `POST /v1/context/chunks` | `system2_context_chunks`, `entity_update_events` | `system2_context_chunks.embedding` | none | optional cache invalidation |
 | Graph fact ingest | `POST /v1/graph/facts` | `entity_update_events` | none | graph facts in `system2` | optional cache invalidation |
-| Kill switch | `POST /admin/disable`, `POST /admin/enable` | `system2_audit_log` | none | none | none |
+| Kill switch | `POST /admin/disable`, `POST /admin/enable` | `system2_audit_log`, `entity_update_events` | none | none | none |
 
 ### Direct Score
 
@@ -736,7 +736,7 @@ When System 2 scores a request directly:
    - `score_request_received`
    - `fairness_outcome`
    - `recommendations_returned`
-4. It should write a `decision_snapshots` row containing request hash, source
+4. It writes a `decision_snapshots` row containing request hash, source
    hashes, output hash, and fairness hash.
 
 Direct scoring must not mutate:
@@ -890,11 +890,10 @@ When the kill switch changes:
 
 1. System 2 writes a hash-chained audit record:
    - `kill_switch_changed`
-2. It should append an `entity_update_events` row with:
+2. It appends an `entity_update_events` row with:
    - `entity_type = "system_control"`
    - `entity_id = "system2.kill_switch"`
-   - `operation = "disable"` or `"enable"` once those operation values are
-     added to the shared enum.
+   - `operation = "disable"` or `"enable"`
 
 Kill-switch records are operational control events. They do not alter source
 data for soldiers, missions, or outcomes.
@@ -907,8 +906,10 @@ The current System 2 implementation already writes:
 - `system2_audit_log`
 - `system2_context_chunks`
 - `decision_snapshots` for agent-run recommendations
+- `decision_snapshots` for direct `/v1/score` recommendations
 - `entity_update_events` for approval/rejection, context ingest, and graph
   ingest
+- `entity_update_events` for kill-switch changes
 - `entity_update_events` for cognitive adaptation recommendations and
   scenario-inject approval/rejection
 - FalkorDB facts through `/v1/graph/facts`
@@ -917,8 +918,6 @@ The current System 2 implementation already writes:
 
 The following are contract requirements still to implement:
 
-- `entity_update_events` writes for kill-switch changes.
-- `decision_snapshots` writes for direct `/v1/score` recommendations.
 - Fuller enrichment of ID-only requests with training observations, deployment
   outcomes, retrieval context, and graph facts beyond the currently resolved
   candidates and role slots.

@@ -89,7 +89,8 @@ request validation, protected-attribute exclusion from feature hashing,
 counterfactual fairness invariance, proxy-feature detection, group fairness
 metrics, low-confidence disagreement behavior, candidate-pool resolution, and
 audit hash-chain validation. It also covers cognitive adaptation recommendation,
-safety blocking, and instructor approval.
+safety blocking, instructor approval, direct score snapshots, kill-switch shared
+update events, API-key parsing, and CORS/security configuration.
 
 ## Data Inputs
 
@@ -218,8 +219,10 @@ role slots, scoring fails instead of falling back to synthetic data.
 
 Builds source references, stable hashes, shared `entity_update_events`, and
 `decision_snapshots`. The Postgres sink creates the shared tables used by the
-three-project contract. The in-memory sink keeps local tests and disconnected
-development dependency-free.
+three-project contract. Direct score calls write `decision_snapshots`, agent
+approvals write recommendation update events, and kill-switch changes write
+system-control update events. The in-memory sink keeps local tests and
+disconnected development dependency-free.
 
 `retrieval.py`
 

@@ -1016,8 +1016,6 @@ For production:
 
 - Built-in auth is API-key only; it does not provide user identity, roles, or
   per-mission authorization.
-- Direct `/v1/score` does not yet write `decision_snapshots`.
-- Kill-switch changes do not yet write `entity_update_events`.
 - Training observation and deployment outcome enrichment require shared
   projections to be populated and further wired into scoring features.
 

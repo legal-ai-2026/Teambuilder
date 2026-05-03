@@ -24,7 +24,12 @@ from .models import (
 )
 from .security import ApiKeyGuard
 from .service import SelectionService
-from .shared_data import build_context_update_events, build_graph_update_events
+from .shared_data import (
+    build_context_update_events,
+    build_direct_score_decision_snapshot,
+    build_graph_update_events,
+    build_kill_switch_update_event,
+)
 
 
 api_settings = InfraSettings.from_env()
@@ -78,7 +83,11 @@ def score(
     _auth: None = Depends(api_key_guard.require_api_key),
 ) -> RosterRecommendation:
     try:
-        return service.score(request)
+        recommendation = service.score(request)
+        agent_orchestrator.shared_data_sink.record_decision_snapshot(
+            build_direct_score_decision_snapshot(request, recommendation)
+        )
+        return recommendation
     except RuntimeError as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from exc
     except ValueError as exc:
@@ -204,10 +213,16 @@ def ingest_graph_facts(
 @app.post("/admin/disable")
 def disable(_auth: None = Depends(api_key_guard.require_admin_key)) -> dict[str, object]:
     service.disable()
+    agent_orchestrator.shared_data_sink.append_update_event(
+        build_kill_switch_update_event(disabled=True)
+    )
     return {"disabled": service.disabled}
 
 
 @app.post("/admin/enable")
 def enable(_auth: None = Depends(api_key_guard.require_admin_key)) -> dict[str, object]:
     service.enable()
+    agent_orchestrator.shared_data_sink.append_update_event(
+        build_kill_switch_update_event(disabled=False)
+    )
     return {"disabled": service.disabled}

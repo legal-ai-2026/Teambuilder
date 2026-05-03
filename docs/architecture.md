@@ -319,10 +319,11 @@ The Postgres backend writes the same canonical record into `system2_audit_log`.
 Both remove protected attributes and hash clear unit/MOS values before
 persistence.
 
-Agent runs also write `decision_snapshots` for drift checks when shared-data
-persistence is enabled. Human approval or rejection, context ingestion, and
-graph fact ingestion append `entity_update_events` so Systems 1 and 3 can
-consume System 2 changes without scraping mutable run payloads.
+Direct scores and agent runs write `decision_snapshots` for drift checks when
+shared-data persistence is enabled. Human approval or rejection, context
+ingestion, graph fact ingestion, and kill-switch changes append
+`entity_update_events` so Systems 1 and 3 can consume System 2 changes without
+scraping mutable run payloads.
 
 ## Cross-System Boundaries
 

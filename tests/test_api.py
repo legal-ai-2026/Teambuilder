@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from system2.api import (
+    agent_orchestrator,
     create_agent_run,
     create_adaptation,
     disable,
@@ -17,6 +18,7 @@ from system2.api import (
     record_agent_run_approval,
     score,
     score_v1,
+    service as api_service,
 )
 from system2.adaptation_store import (
     ADAPTATION_SCHEMA_SQL,
@@ -96,6 +98,23 @@ def test_score_returns_roster_and_audit() -> None:
         assert assessment.model_disagreement == pytest.approx(
             abs(assessment.p_success_tabpfn - assessment.p_success_bayes_mean)
         )
+
+
+def test_direct_score_api_records_decision_snapshot(monkeypatch) -> None:
+    api_service.enable()
+    sink = InMemorySharedDataSink()
+    monkeypatch.setattr(agent_orchestrator, "shared_data_sink", sink)
+    request = ScoreRequest(mission_id="direct-snapshot", candidate_count=80, seed=44)
+
+    payload = score(request)
+
+    assert len(sink.decision_snapshots) == 1
+    snapshot = sink.decision_snapshots[0]
+    assert snapshot["run_id"].startswith("direct-score-")
+    assert snapshot["mission_id"] == "direct-snapshot"
+    assert snapshot["input_source_hashes"] == payload.trace.input_source_hashes
+    assert snapshot["payload"]["status"] == "returned"
+    assert snapshot["payload"]["recommendation"]["mission_id"] == "direct-snapshot"
 
 
 def test_cognitive_adaptation_recommends_instructor_approved_scenario_changes() -> None:
@@ -225,6 +244,25 @@ def test_kill_switch_blocks_versioned_scoring() -> None:
 
     assert exc_info.value.status_code == 423
     enable()
+
+
+def test_kill_switch_api_records_shared_update_events(monkeypatch) -> None:
+    sink = InMemorySharedDataSink()
+    monkeypatch.setattr(agent_orchestrator, "shared_data_sink", sink)
+
+    try:
+        disabled = disable()
+        enabled = enable()
+    finally:
+        api_service.enable()
+
+    assert disabled == {"disabled": True}
+    assert enabled == {"disabled": False}
+    assert [event["operation"] for event in sink.update_events] == ["disable", "enable"]
+    assert all(event["entity_type"] == "system_control" for event in sink.update_events)
+    assert all(event["entity_id"] == "system2.kill_switch" for event in sink.update_events)
+    assert sink.update_events[0]["event_payload"]["disabled"] is True
+    assert sink.update_events[1]["event_payload"]["disabled"] is False
 
 
 def test_inbound_contract_forbids_unknown_fields() -> None:
