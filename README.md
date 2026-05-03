@@ -76,6 +76,12 @@ tables at startup when those backends are enabled. Keep
 `AGENT_REPOSITORY_BACKEND=memory`, `AUDIT_BACKEND=file`, and
 `RETRIEVAL_BACKEND=local` for local runs without Postgres.
 
+Before starting against the infrastructure, smoke-test the generated env file:
+
+```bash
+python scripts/smoke_infra.py --env-file .env.infra --migrate
+```
+
 ## Endpoints
 
 - `POST /v1/score` - ranks candidates into a 14-slot direct-action roster by default.

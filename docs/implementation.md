@@ -18,6 +18,12 @@ To load a generated infrastructure env file without exporting every variable:
 SYSTEM2_ENV_FILE=.env.infra uvicorn system2.api:app --reload --port 8002
 ```
 
+To verify the infrastructure first:
+
+```bash
+python scripts/smoke_infra.py --env-file .env.infra --migrate
+```
+
 Health:
 
 ```bash
