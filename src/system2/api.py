@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from . import __version__
-from .agent_stack import build_agent_orchestrator
+from .agent_stack import build_agent_orchestrator, build_selection_service
 from .config import InfraSettings
 from .models import (
     AgentApprovalRequest,
@@ -25,7 +25,7 @@ app = FastAPI(
     description="Ranks soldiers into mission rosters with uncertainty, fairness, and trace outputs.",
 )
 
-service = SelectionService()
+service = build_selection_service()
 agent_orchestrator = build_agent_orchestrator(selection_service=service)
 
 

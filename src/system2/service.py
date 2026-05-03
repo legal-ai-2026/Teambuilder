@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .audit import AuditLog
+from .audit import AuditLog, AuditSink
 from .calibration import calibration_bins, disagreement_histogram
 from .career import career_forecast
 from .data import default_roles, generate_soldiers
@@ -12,7 +12,7 @@ from .scoring import feature_hash, score_matrix, solve_assignment
 
 
 class SelectionService:
-    def __init__(self, audit_log: AuditLog | None = None) -> None:
+    def __init__(self, audit_log: AuditSink | None = None) -> None:
         self.disabled = False
         self.audit_log = audit_log or AuditLog()
 

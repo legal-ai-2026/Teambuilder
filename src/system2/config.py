@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 _BACKENDS = {
     "agent_repository": {"memory", "postgres"},
     "agent_state": {"memory", "redis"},
+    "audit": {"file", "postgres"},
     "retrieval": {"local", "pgvector"},
     "graph": {"local", "falkordb"},
 }
@@ -51,6 +52,7 @@ class InfraSettings:
     falkordb_url: str | None
     pgvector_enabled: bool
     audit_log_path: str
+    audit_backend: str
     agent_repository_backend: str
     agent_state_backend: str
     retrieval_backend: str
@@ -66,6 +68,11 @@ class InfraSettings:
             falkordb_url=source.get("FALKORDB_URL"),
             pgvector_enabled=pgvector_enabled,
             audit_log_path=source.get("SYSTEM2_AUDIT_LOG", "/tmp/system2_audit.jsonl"),
+            audit_backend=_backend(
+                source.get("AUDIT_BACKEND"),
+                default="postgres" if source.get("DATABASE_URL") else "file",
+                kind="audit",
+            ),
             agent_repository_backend=_backend(
                 source.get("AGENT_REPOSITORY_BACKEND"),
                 default="postgres" if source.get("DATABASE_URL") else "memory",
@@ -105,6 +112,7 @@ class InfraSettings:
             },
             "audit_log_path": self.audit_log_path,
             "backends": {
+                "audit": self.audit_backend,
                 "agent_repository": self.agent_repository_backend,
                 "agent_state": self.agent_state_backend,
                 "retrieval": self.retrieval_backend,

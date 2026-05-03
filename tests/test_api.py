@@ -16,9 +16,16 @@ from system2.api import (
 )
 from system2.agent_orchestrator import AgentOrchestrator
 from system2.agent_state import InMemoryAgentStateStore, RedisAgentStateStore
-from system2.agent_stack import build_agent_orchestrator
+from system2.agent_stack import build_agent_orchestrator, build_audit_log
 from system2.agent_store import InMemoryAgentRunRepository
-from system2.audit import AuditLog, validate_hash_chain
+from system2.audit import (
+    POSTGRES_AUDIT_SCHEMA_SQL,
+    AuditLog,
+    PostgresAuditLog,
+    build_audit_record,
+    validate_audit_records,
+    validate_hash_chain,
+)
 from system2.config import InfraSettings, redact_url
 from system2.data import default_roles, generate_soldiers
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
@@ -97,6 +104,7 @@ def test_infra_settings_redacts_connection_urls() -> None:
             "REDIS_URL": "redis://:redis_secret@redis.internal:6379/0",
             "FALKORDB_URL": "redis://graph_user:graph_secret@falkordb.internal:6379",
             "PGVECTOR_ENABLED": "true",
+            "AUDIT_BACKEND": "postgres",
             "AGENT_REPOSITORY_BACKEND": "postgres",
             "AGENT_STATE_BACKEND": "redis",
             "RETRIEVAL_BACKEND": "pgvector",
@@ -113,6 +121,7 @@ def test_infra_settings_redacts_connection_urls() -> None:
     assert status["redis"]["url"] == "redis://redis.internal:6379/0"
     assert status["falkordb"]["url"] == "redis://graph_user:***@falkordb.internal:6379"
     assert status["backends"] == {
+        "audit": "postgres",
         "agent_repository": "postgres",
         "agent_state": "redis",
         "retrieval": "pgvector",
@@ -126,8 +135,35 @@ def test_infra_settings_default_to_local_backends() -> None:
 
     assert settings.agent_repository_backend == "memory"
     assert settings.agent_state_backend == "memory"
+    assert settings.audit_backend == "file"
     assert settings.retrieval_backend == "local"
     assert settings.graph_backend == "local"
+
+
+def test_audit_records_redact_and_validate_hash_chain() -> None:
+    first = build_audit_record(
+        "candidate_seen",
+        {"unit_id": "U-01", "mos": "11B", "protected_race": "group_a"},
+        "0" * 64,
+    )
+    second = build_audit_record("decision_seen", {"mission_id": "m-1"}, first["record_hash"])
+
+    assert "protected_race" not in first["payload"]
+    assert first["payload"]["unit_id"] != "U-01"
+    assert first["payload"]["mos"] != "11B"
+    assert validate_audit_records([first, second])
+
+
+def test_postgres_audit_schema_is_hash_chained() -> None:
+    assert "CREATE TABLE IF NOT EXISTS system2_audit_log" in POSTGRES_AUDIT_SCHEMA_SQL
+    assert "previous_hash text NOT NULL" in POSTGRES_AUDIT_SCHEMA_SQL
+    assert "record_hash text NOT NULL UNIQUE" in POSTGRES_AUDIT_SCHEMA_SQL
+
+
+def test_build_audit_log_uses_file_backend_by_default() -> None:
+    audit_log = build_audit_log(InfraSettings.from_env({}))
+
+    assert isinstance(audit_log, AuditLog)
 
 
 def test_agent_run_repository_tracks_runs() -> None:
