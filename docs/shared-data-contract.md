@@ -67,6 +67,214 @@ or:
 System 2 can still accept explicit candidate payloads for disconnected/local
 operation, but integrated operation should resolve by ID.
 
+## How System 2 Changes Shared Data
+
+System 2 is mostly a decision-support service. It should not overwrite soldier,
+mission, training, or deployment outcome authority owned by other systems. It
+does write its own decision records, audit records, retrieval context, graph
+facts, approvals, and drift snapshots.
+
+### Write Summary
+
+| System 2 operation | Endpoint | Postgres writes | pgvector writes | FalkorDB writes | Redis writes |
+|---|---|---|---|---|---|
+| Direct score | `POST /v1/score` | `system2_audit_log`; future `decision_snapshots` | none | none | none |
+| Agent run create | `POST /v1/agent-runs` | `system2_agent_runs`, `system2_audit_log`; future `decision_snapshots` | none | none | `system2:agent-run:{run_id}:status`, lock |
+| Agent approval | `POST /v1/agent-runs/{run_id}/approval` | `system2_agent_runs`, `system2_audit_log`, `entity_update_events`; future `decision_snapshots` | none | optional assignment facts after approval | status update |
+| Context ingest | `POST /v1/context/chunks` | `system2_context_chunks`, `entity_update_events` | `system2_context_chunks.embedding` | none | optional cache invalidation |
+| Graph fact ingest | `POST /v1/graph/facts` | `entity_update_events` | none | graph facts in `system2` | optional cache invalidation |
+| Kill switch | `POST /admin/disable`, `POST /admin/enable` | `system2_audit_log` | none | none | none |
+
+### Direct Score
+
+When System 2 scores a request directly:
+
+1. It reads candidate and role data from the request today. In integrated mode
+   it should resolve IDs from Postgres projections.
+2. It computes a recommendation.
+3. It appends audit records:
+   - `score_request_received`
+   - `fairness_outcome`
+   - `recommendations_returned`
+4. It should write a `decision_snapshots` row containing request hash, source
+   hashes, output hash, and fairness hash.
+
+Direct scoring must not mutate:
+
+- `soldiers_current`
+- `missions_current`
+- `role_slots_current`
+- `training_observations_current`
+- `deployment_outcomes_current`
+
+### Agent Run Create
+
+When System 2 creates an agent run:
+
+1. It creates a `system2_agent_runs` row with status `queued`.
+2. It writes Redis status `system2:agent-run:{run_id}:status`.
+3. It acquires Redis lock `system2:agent-run:{run_id}:lock`.
+4. It records run steps:
+   - `request_context`
+   - `retrieval_context`
+   - `graph_context`
+   - `roster_recommendation`
+   - `human_approval`
+5. It saves the final run payload with status `awaiting_approval` by default.
+6. It releases the Redis lock.
+
+The agent run payload should include source refs for each output. The current
+implementation records step evidence; integrated mode should expand that
+evidence to include concrete Postgres row hashes, pgvector chunk IDs, and
+FalkorDB fact IDs.
+
+### Agent Approval Or Rejection
+
+When a human approves or rejects a run:
+
+1. System 2 reads `system2_agent_runs` by `run_id`.
+2. It verifies the run is `awaiting_approval`.
+3. It appends an `approval_recorded` step.
+4. It stores:
+   - `decision`
+   - `approver_id`
+   - `rationale`
+   - `decided_at`
+5. It changes the run status:
+   - `approved` -> `completed`
+   - `rejected` -> `rejected`
+6. It updates Redis run status.
+7. It should append an `entity_update_events` row.
+
+Recommended approval event:
+
+```json
+{
+  "entity_type": "recommendation",
+  "entity_id": "run_id-or-recommendation_id",
+  "source_app": "system2",
+  "source_record_id": "run_id",
+  "operation": "approve",
+  "event_payload": {
+    "run_id": "run-123",
+    "mission_id": "raid-tonight",
+    "decision": "approved",
+    "approver_id": "commander-1",
+    "selected_soldier_ids": ["RGR-0001", "RGR-0002"],
+    "slot_ids": ["TL-1", "MED-1"]
+  },
+  "previous_source_hash": "hash-before-approval",
+  "new_source_hash": "hash-after-approval",
+  "actor_id": "commander-1",
+  "reason": "Reviewed recommendation, fairness audit, and second choices."
+}
+```
+
+Rejected recommendations use `operation = "reject"` and should preserve the
+same source references so future drift reviews can explain why the rejected
+recommendation was produced.
+
+### Context Chunk Ingestion
+
+When System 2 ingests context chunks:
+
+1. It upserts rows in `system2_context_chunks`.
+2. It stores externally supplied embeddings in `embedding`.
+3. It should append one `entity_update_events` row per chunk.
+4. It should invalidate any context-cache Redis keys if those are introduced.
+
+Recommended context event:
+
+```json
+{
+  "entity_type": "policy",
+  "entity_id": "sop-001",
+  "source_app": "system2",
+  "source_record_id": "sop-001",
+  "operation": "observe",
+  "event_payload": {
+    "chunk_id": "sop-001",
+    "source": "unit-sop",
+    "title": "Roster approval",
+    "content_hash": "hash-of-content",
+    "embedding_model": "external-model-name"
+  },
+  "new_source_hash": "hash-of-chunk-record",
+  "actor_id": "system2-context-ingest",
+  "reason": "Context chunk ingested for retrieval."
+}
+```
+
+System 2 does not create embeddings. The embedding producer must include enough
+metadata to identify the embedding model and source text version.
+
+### Graph Fact Ingestion
+
+When System 2 ingests graph facts:
+
+1. It writes or merges the fact into FalkorDB graph `system2`.
+2. It should append an `entity_update_events` row for each graph fact.
+3. The event payload must include source metadata sufficient to rebuild the
+   graph from Postgres if FalkorDB is lost.
+
+Recommended graph event:
+
+```json
+{
+  "entity_type": "graph_fact",
+  "entity_id": "fact-hash",
+  "source_app": "system2",
+  "source_record_id": "fact-hash",
+  "operation": "observe",
+  "event_payload": {
+    "subject": "raid-tonight",
+    "predicate": "requires_role",
+    "object": "medic",
+    "metadata": {
+      "slot_id": "MED-1",
+      "source_app": "system2"
+    }
+  },
+  "new_source_hash": "hash-of-fact",
+  "actor_id": "system2-graph-ingest",
+  "reason": "Derived graph fact ingested for relationship lookup."
+}
+```
+
+### Kill Switch Changes
+
+When the kill switch changes:
+
+1. System 2 writes a hash-chained audit record:
+   - `kill_switch_changed`
+2. It should append an `entity_update_events` row with:
+   - `entity_type = "system_control"`
+   - `entity_id = "system2.kill_switch"`
+   - `operation = "disable"` or `"enable"` once those operation values are
+     added to the shared enum.
+
+Kill-switch records are operational control events. They do not alter source
+data for soldiers, missions, or outcomes.
+
+### Current Implementation Gap
+
+The current System 2 implementation already writes:
+
+- `system2_agent_runs`
+- `system2_audit_log`
+- `system2_context_chunks`
+- FalkorDB facts through `/v1/graph/facts`
+- Redis status and lock keys
+
+The following are contract requirements still to implement:
+
+- `entity_update_events` writes for approval, context ingest, graph ingest, and
+  kill-switch changes.
+- `decision_snapshots` writes for direct recommendations and approved agent
+  recommendations.
+- richer `source_refs` attached to each recommendation and agent step.
+- ID-only request resolution through `candidate_pool_id`.
+
 ## Postgres Tables
 
 Use separate tables for current projections and append-only updates.
