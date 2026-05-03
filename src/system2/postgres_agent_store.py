@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -68,6 +69,8 @@ class PostgresAgentRunRepository:
         if row is None:
             return None
         payload = row["payload"] if isinstance(row, dict) else row[0]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
         return load_agent_run(payload)
 
     def save(self, run: AgentRun) -> AgentRun:
@@ -80,7 +83,7 @@ class PostgresAgentRunRepository:
                     INSERT INTO system2_agent_runs (
                         run_id, status, mission_id, created_at, updated_at, payload
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb)
                     ON CONFLICT (run_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         mission_id = EXCLUDED.mission_id,
@@ -93,7 +96,7 @@ class PostgresAgentRunRepository:
                         stored.request.score_request.mission_id,
                         stored.created_at,
                         stored.updated_at,
-                        payload,
+                        json.dumps(payload, sort_keys=True, default=str),
                     ),
                 )
             connection.commit()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -91,7 +92,7 @@ class PostgresAdaptationRepository:
                         adaptation_id, mission_id, team_id, status,
                         created_at, updated_at, payload
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
                     ON CONFLICT (adaptation_id) DO UPDATE SET
                         mission_id = EXCLUDED.mission_id,
                         team_id = EXCLUDED.team_id,
@@ -106,7 +107,7 @@ class PostgresAdaptationRepository:
                         adaptation.status,
                         adaptation.state.generated_at,
                         now,
-                        payload,
+                        json.dumps(payload, sort_keys=True, default=str),
                     ),
                 )
             connection.commit()
@@ -123,6 +124,8 @@ class PostgresAdaptationRepository:
         if row is None:
             return None
         payload = row["payload"] if isinstance(row, dict) else row[0]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
         return load_adaptation(payload)
 
     def list_by_mission(self, mission_id: str, *, limit: int = 50) -> list[CognitiveAdaptationResponse]:
@@ -140,7 +143,7 @@ class PostgresAdaptationRepository:
                 )
                 rows = cursor.fetchall()
         return [
-            load_adaptation(row["payload"] if isinstance(row, dict) else row[0])
+            load_adaptation(_json_payload(row["payload"] if isinstance(row, dict) else row[0]))
             for row in rows
         ]
 
@@ -165,3 +168,9 @@ def dump_adaptation(adaptation: CognitiveAdaptationResponse) -> dict[str, Any]:
 
 def load_adaptation(payload: dict[str, Any]) -> CognitiveAdaptationResponse:
     return CognitiveAdaptationResponse.model_validate(payload)
+
+
+def _json_payload(payload: dict[str, Any] | str) -> dict[str, Any]:
+    if isinstance(payload, str):
+        return json.loads(payload)
+    return payload
