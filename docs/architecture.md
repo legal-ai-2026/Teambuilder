@@ -51,6 +51,41 @@ entity_update_events + AAR/lessons lane
 The live adaptation loop is advisory. It does not autonomously push new
 scenario injects.
 
+## Operational Twin Agent Loop
+
+```text
+Field artifacts and observations
+    |
+    | POST /v1/operational-twin/runs
+    v
+Perception normalizer
+    |
+    v
+Artifact + Observation records
+    |
+    v
+Latent state estimator
+    |
+    v
+Evidence bundle with model, policy, and hash-chain metadata
+    |
+    v
+Scenario director drafts exactly three options
+    |
+    v
+Critic marks pass / modify / escalate / reject
+    |
+    v
+Human approve / reject / escalate decision
+    |
+    v
+Decision + lesson learned + entity_update_events
+```
+
+This loop is the Foundry-style operational twin slice. Raw evidence, inferred
+state, draft options, and human decisions are separate objects. The service
+does not auto-approve scenario options or mission COAs.
+
 ## Roster Runtime Flow
 
 ```text
@@ -95,6 +130,7 @@ The active package is `src/system2/`.
 | `api.py` | FastAPI routes, versioned scoring endpoint, health checks, kill switch endpoints |
 | `adaptation_store.py` | In-memory and Postgres repositories for adaptation lookup and mission history |
 | `cognitive.py` | Evidence fusion, cognitive state estimation, scenario direction, safety/doctrine gating, and adaptation approval |
+| `operational_twin.py` | Backend operational twin loop for multimodal evidence, state estimates, governed options, decisions, and lessons |
 | `service.py` | Orchestrates scoring, assignment, fairness, career forecast, trace metadata, and audit logging |
 | `candidate_pool.py` | Resolves `candidate_pool_id` into canonical soldiers, role slots, and source references |
 | `models.py` | Pydantic request/response contracts and enums |
@@ -117,6 +153,9 @@ Canonical endpoints:
 | `GET` | `/v1/healthz` | Liveness and kill-switch state |
 | `POST` | `/v1/adaptations` | Cognitive state estimation and scenario-inject recommendation |
 | `POST` | `/v1/adaptations/{adaptation_id}/approval` | Instructor approval or rejection for a scenario inject |
+| `POST` | `/v1/operational-twin/runs` | Multimodal operational twin run with evidence bundle and draft options |
+| `GET` | `/v1/operational-twin/runs/{twin_run_id}` | Operational twin run lookup |
+| `POST` | `/v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` | Human approve/reject/escalate decision |
 | `POST` | `/v1/score` | Mission roster scoring |
 | `POST` | `/v1/agent-runs` | Agentic recommendation workflow |
 | `GET` | `/v1/agent-runs/{run_id}` | Agent run lookup |
@@ -148,6 +187,14 @@ Core contracts:
 - `ScenarioInjectRecommendation`
 - `CognitiveAdaptationResponse`
 - `ScenarioApprovalRequest`
+- `OperationalTwinRequest`
+- `ArtifactInput`
+- `ObservationInput`
+- `StateEstimate`
+- `EvidenceBundle`
+- `ScenarioOption`
+- `ScenarioOptionDecisionRequest`
+- `LessonLearned`
 - `ScoreRequest`
 - `Soldier`
 - `RoleRequirement`

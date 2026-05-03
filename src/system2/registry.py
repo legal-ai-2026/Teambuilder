@@ -13,6 +13,10 @@ MODEL_VERSIONS = {
     "cognitive_state_estimator": "deterministic-cognitive-state-0.1",
     "scenario_director": "deterministic-scenario-director-0.1",
     "safety_doctrine_auditor": "deterministic-safety-doctrine-auditor-0.1",
+    "operational_twin_perception": "deterministic-twin-perception-0.1",
+    "operational_twin_state_estimator": "deterministic-twin-state-estimator-0.1",
+    "operational_twin_scenario_director": "deterministic-twin-scenario-director-0.1",
+    "operational_twin_critic": "deterministic-twin-critic-0.1",
 }
 
 DOD_AI_PRINCIPLES = {

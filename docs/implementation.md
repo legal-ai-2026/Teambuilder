@@ -108,6 +108,21 @@ Each evidence object carries text, tags, optional metrics such as
 `sleep_hours`, `hours_awake`, `cognitive_load`, `hydration`, or direct
 dimension scores, and an optional `source_ref` for replay.
 
+`OperationalTwinRequest` accepts:
+
+- `mission_id`, `operator_id`, `mode`, and `team_id`
+- zero or more `ArtifactInput` objects for audio, transcripts, OCR text,
+  telemetry, weather, sleep/food logs, photos, and manual notes
+- zero or more explicit `ObservationInput` objects
+- optional `environment` context that is normalized into environment state and
+  weather observations
+
+The operational twin endpoint separates raw artifacts from atomic
+observations, provisional `StateEstimate`, `EvidenceBundle`, draft
+`ScenarioOption` objects, human `OperationalTwinDecision` records, and
+`LessonLearned` outputs. Scenario options always start as `draft`; approval,
+rejection, or escalation is recorded through the decision endpoint.
+
 `ScoreRequest` accepts either:
 
 - `candidate_pool_id`: canonical ID recorded for cross-system provenance
@@ -140,14 +155,27 @@ the standard 14-slot roster.
 Defines FastAPI routes. `/v1/score` and `/v1/healthz` are canonical. `/score`
 and `/health` are compatibility aliases. `/v1/adaptations` runs the cognitive
 mission adaptation loop, and `/v1/adaptations/{adaptation_id}/approval` records
-instructor approval or rejection. `/v1/agent-runs` starts the roster
-recommendation workflow, `/v1/agent-runs/{run_id}` fetches the stored run, and
+instructor approval or rejection. `/v1/operational-twin/runs` runs the
+Foundry-style operational twin loop, the matching `GET` route fetches the stored
+run, and the option decision route records approve/reject/escalate decisions.
+`/v1/agent-runs` starts the roster recommendation workflow,
+`/v1/agent-runs/{run_id}` fetches the stored run, and
 `/v1/agent-runs/{run_id}/approval` records approval or rejection. The context
 and graph ingestion routes populate pgvector/FalkorDB-backed context. CORS and
 API-key protection are configured from `InfraSettings`; health routes are
 public, workflow routes use the service key, and admin routes use the admin key.
 Runtime errors from the direct scoring service become HTTP `423` when the
 engine is disabled; assignment failures become HTTP `422`.
+
+`operational_twin.py`
+
+Implements the backend-only operational twin agent loop. The perception stage
+turns artifacts into source-linked observations, the state stage estimates
+fatigue burden, situational clarity, cohesion, leader decision quality, mission
+tempo risk, and training challenge gap, the scenario director drafts exactly
+three options, and the critic marks each option as pass, modify, escalate, or
+reject. A separate decision method records the named human decision and creates
+a lesson-learned draft when an option is approved.
 
 `security.py`
 

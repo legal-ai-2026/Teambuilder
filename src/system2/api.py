@@ -18,12 +18,17 @@ from .models import (
     ContextIngestResult,
     GraphIngestRequest,
     GraphIngestResult,
+    OperationalTwinRequest,
+    OperationalTwinResponse,
     RosterRecommendation,
     ScenarioApprovalRequest,
     ScenarioApprovalResponse,
+    ScenarioOptionDecisionRequest,
+    ScenarioOptionDecisionResponse,
     ScoreRequest,
     SourceReference,
 )
+from .operational_twin import OperationalTwinService
 from .security import ApiKeyGuard
 from .service import SelectionService
 from .shared_data import (
@@ -62,6 +67,10 @@ cognitive_service = CognitiveAdaptationService(
     shared_data_sink=agent_orchestrator.shared_data_sink,
     retriever=agent_orchestrator.retriever,
     repository=build_adaptation_repository(agent_orchestrator.settings),
+)
+operational_twin_service = OperationalTwinService(
+    audit_log=service.audit_log,
+    shared_data_sink=agent_orchestrator.shared_data_sink,
 )
 
 
@@ -154,6 +163,49 @@ def record_adaptation_approval(
     if approval is None:
         raise HTTPException(status_code=404, detail="adaptation not found")
     return approval
+
+
+@app.post("/v1/operational-twin/runs", response_model=OperationalTwinResponse)
+def create_operational_twin_run(
+    request: OperationalTwinRequest,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> OperationalTwinResponse:
+    try:
+        return operational_twin_service.run(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/operational-twin/runs/{twin_run_id}", response_model=OperationalTwinResponse)
+def get_operational_twin_run(
+    twin_run_id: str,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> OperationalTwinResponse:
+    run = operational_twin_service.get(twin_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="operational twin run not found")
+    return run
+
+
+@app.post(
+    "/v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision",
+    response_model=ScenarioOptionDecisionResponse,
+)
+def record_operational_twin_option_decision(
+    twin_run_id: str,
+    scenario_option_id: str,
+    request: ScenarioOptionDecisionRequest,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> ScenarioOptionDecisionResponse:
+    if request.scenario_option_id != scenario_option_id:
+        raise HTTPException(status_code=422, detail="scenario option id mismatch")
+    try:
+        decision = operational_twin_service.record_decision(twin_run_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if decision is None:
+        raise HTTPException(status_code=404, detail="operational twin run not found")
+    return decision
 
 
 @app.post("/v1/agent-runs", response_model=AgentRun)

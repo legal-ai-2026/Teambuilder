@@ -122,6 +122,9 @@ python scripts/smoke_infra.py --env-file .env.infra --migrate
 - `GET /v1/adaptations/{adaptation_id}` - fetches a stored adaptation.
 - `GET /v1/missions/{mission_id}/adaptations` - lists stored adaptations for a mission.
 - `POST /v1/adaptations/{adaptation_id}/approval` - records instructor approval or rejection for a proposed inject.
+- `POST /v1/operational-twin/runs` - ingests multimodal evidence into an operational twin, estimates latent state, and drafts three governed options.
+- `GET /v1/operational-twin/runs/{twin_run_id}` - fetches a stored operational twin run.
+- `POST /v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` - records approve/reject/escalate decisions and emits lessons learned.
 - `POST /v1/agent-runs` - runs the agentic recommendation workflow and returns an approval-ready run.
 - `GET /v1/agent-runs/{run_id}` - fetches an agent run by ID.
 - `POST /v1/agent-runs/{run_id}/approval` - records an authorized approve/reject decision.
@@ -173,6 +176,46 @@ curl -X POST http://127.0.0.1:8000/v1/adaptations/ADAPTATION_ID/approval \
     "rationale": "Targets systems thinking without increasing general difficulty."
   }'
 ```
+
+## Operational Twin Example
+
+`/v1/operational-twin/runs` is the backend-only Foundry-style agentic slice.
+It separates artifacts, observations, provisional state estimates, evidence
+bundles, draft scenario options, human decisions, and lessons learned.
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/operational-twin/runs \
+  -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
+  -d '{
+    "mission_id": "foundry-twin-demo",
+    "operator_id": "instructor-1",
+    "mode": "training",
+    "team_id": "alpha-1",
+    "training_objective": "Train systems thinking under fatigue.",
+    "artifacts": [
+      {
+        "kind": "audio",
+        "content": "Two missed comms acknowledgements. Leader lost the relationship between terrain, timing, support, civilian movement, and delayed comms relay under fatigue."
+      },
+      {
+        "kind": "sleep_food_log",
+        "content": "Median team sleep was 4.1 hours.",
+        "metadata": {"sleep_hours": 4.1}
+      }
+    ],
+    "environment": {
+      "weather": "cold wind",
+      "terrain": "rough wooded draw",
+      "temperature_c": 3,
+      "wind_speed": 18
+    }
+  }'
+```
+
+The response returns normalized evidence, one provisional `state_estimate`, one
+`evidence_bundle`, and exactly three `scenario_options`. All options remain
+`draft` until the decision endpoint records a named human decision.
 
 ## Roster Example
 

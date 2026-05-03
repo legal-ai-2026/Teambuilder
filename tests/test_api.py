@@ -7,15 +7,18 @@ from system2.api import (
     agent_orchestrator,
     create_agent_run,
     create_adaptation,
+    create_operational_twin_run,
     disable,
     enable,
     get_adaptation,
     get_agent_run,
+    get_operational_twin_run,
     ingest_context_chunks,
     ingest_graph_facts,
     list_mission_adaptations,
     record_adaptation_approval,
     record_agent_run_approval,
+    record_operational_twin_option_decision,
     score,
     score_v1,
     service as api_service,
@@ -55,16 +58,20 @@ from system2.models import (
     AgentRunRequest,
     AgentRunStatus,
     AdaptationConstraints,
+    ArtifactInput,
     CognitiveAdaptationRequest,
     ContextChunkInput,
     ContextIngestRequest,
     GraphFactInput,
     GraphIngestRequest,
+    OperationalTwinRequest,
     RoleRequirement,
     ScenarioApprovalRequest,
+    ScenarioOptionDecisionRequest,
     ScoreRequest,
     TrainingEvidence,
 )
+from system2.operational_twin import OperationalTwinService
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
 from system2.graph import GraphFact, LocalGraphContextProvider, cypher_identifier, cypher_quote, parse_falkordb_rows
@@ -211,6 +218,140 @@ def test_cognitive_adaptation_safety_auditor_blocks_excess_risk(tmp_path) -> Non
     assert len(payload.blocked_recommendations) == 2
     assert all(item.status == "blocked" for item in payload.blocked_recommendations)
     assert sink.update_events[-1]["entity_type"] == "scenario_adaptation"
+
+
+def test_operational_twin_agent_loop_with_synthetic_data(tmp_path) -> None:
+    sink = InMemorySharedDataSink()
+    service = OperationalTwinService(
+        audit_log=AuditLog(tmp_path / "audit.jsonl"),
+        shared_data_sink=sink,
+    )
+    request = OperationalTwinRequest(
+        mission_id="foundry-twin-demo",
+        operator_id="instructor-1",
+        mode="training",
+        team_id="alpha-1",
+        training_objective="Train systems thinking under fatigue without increasing general difficulty.",
+        artifacts=[
+            ArtifactInput(
+                kind="audio",
+                content=(
+                    "Two missed comms acknowledgements in the last 15 minutes. "
+                    "Leader handled direct contact but lost the second-order "
+                    "relationship between terrain, timing, support, civilian "
+                    "movement, and the delayed comms relay under fatigue."
+                ),
+                source_system="field_tablet",
+            ),
+            ArtifactInput(
+                kind="ocr_text",
+                content=(
+                    "OR lane note: support element timing moved five minutes. "
+                    "Civilian movement appears on the flank near the route."
+                ),
+                source_system="phone_camera",
+            ),
+            ArtifactInput(
+                kind="sleep_food_log",
+                content="Median team sleep over the prior 24 hours was 4.1 hours.",
+                metadata={"sleep_hours": 4.1, "hydration": 0.62},
+                source_system="instructor_log",
+            ),
+            ArtifactInput(
+                kind="photo",
+                content="Photo annotation shows civilian movement on the flank.",
+                source_system="field_tablet",
+            ),
+        ],
+        environment={
+            "weather": "cold wind",
+            "terrain": "rough wooded draw",
+            "visibility": "limited",
+            "temperature_c": 3,
+            "wind_speed": 18,
+        },
+    )
+
+    payload = service.run(request)
+
+    assert payload.status == "draft"
+    assert len(payload.artifacts) >= 5
+    assert len(payload.observations) >= 5
+    assert payload.state_estimate.state_vector.fatigue_burden > 0.55
+    assert payload.state_estimate.state_vector.situational_clarity < 0.65
+    assert payload.evidence_bundle.policy_checks.human_approval_required is True
+    assert payload.evidence_bundle.policy_checks.evidence_threshold_ok is True
+    assert len(payload.scenario_options) == 3
+    assert all(item.status == "draft" for item in payload.scenario_options)
+    assert all(item.evidence_bundle_id == payload.evidence_bundle.bundle_id for item in payload.scenario_options)
+    assert all(item.critic_status in {"pass", "modify", "escalate"} for item in payload.scenario_options)
+    assert "comms relay" in payload.scenario_options[0].narrative
+    assert sink.update_events[-1]["entity_type"] == "operational_twin"
+
+    decision = service.record_decision(
+        payload.twin_run_id,
+        ScenarioOptionDecisionRequest(
+            scenario_option_id=payload.scenario_options[0].scenario_option_id,
+            decision="approved",
+            actor_id="instructor-1",
+            comment="Approved as targeted systems-thinking pressure with bounded risk.",
+        ),
+    )
+
+    assert decision is not None
+    assert decision.status == "approved"
+    assert decision.lesson_learned is not None
+    assert decision.lesson_learned.evidence_bundle_id == payload.evidence_bundle.bundle_id
+    stored = service.get(payload.twin_run_id)
+    assert stored is not None
+    assert stored.status == "completed"
+    assert stored.decisions[0].decision == "approved"
+    assert stored.scenario_options[0].status == "approved"
+    assert sink.update_events[-1]["entity_type"] == "operational_twin_option"
+
+
+def test_operational_twin_api_round_trip_uses_draft_then_approval() -> None:
+    payload = create_operational_twin_run(
+        OperationalTwinRequest(
+            mission_id="api-twin-demo",
+            operator_id="instructor-1",
+            mode="training",
+            team_id="alpha-2",
+            artifacts=[
+                ArtifactInput(
+                    kind="manual_note",
+                    content=(
+                        "Leader made a single option assumption after a "
+                        "contradictory report and needed an assumption check."
+                    ),
+                ),
+                ArtifactInput(
+                    kind="sleep_food_log",
+                    content="Team sleep was 5.5 hours.",
+                    metadata={"sleep_hours": 5.5},
+                ),
+            ],
+        )
+    )
+
+    assert get_operational_twin_run(payload.twin_run_id).twin_run_id == payload.twin_run_id
+    assert len(payload.scenario_options) == 3
+    option_id = payload.scenario_options[0].scenario_option_id
+
+    decision = record_operational_twin_option_decision(
+        payload.twin_run_id,
+        option_id,
+        ScenarioOptionDecisionRequest(
+            scenario_option_id=option_id,
+            decision="approved",
+            actor_id="instructor-1",
+            comment="Approved for the next repetition.",
+        ),
+    )
+
+    assert decision.status == "approved"
+    assert decision.lesson_learned is not None
+    assert get_operational_twin_run(payload.twin_run_id).scenario_options[0].status == "approved"
 
 
 def test_adaptation_repository_round_trips_serialized_payload(tmp_path) -> None:

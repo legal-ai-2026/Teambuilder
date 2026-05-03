@@ -360,6 +360,280 @@ class GraphIngestResult(StrictBaseModel):
     fact_count: int
 
 
+TwinMode = Literal["training", "mission"]
+
+TwinArtifactKind = Literal[
+    "audio",
+    "transcript",
+    "document_image",
+    "ocr_text",
+    "telemetry",
+    "weather",
+    "sleep_food_log",
+    "photo",
+    "manual_note",
+]
+
+TwinObservationKind = Literal[
+    "voice_fact",
+    "ocr_fact",
+    "telemetry_fact",
+    "weather_fact",
+    "sleep_food_fact",
+    "photo_fact",
+    "manual_note",
+]
+
+TwinSubjectType = Literal["person", "team", "mission", "environment"]
+ScenarioOptionType = Literal["training_inject", "rehearsal_variant", "mission_coa"]
+ScenarioCriticStatus = Literal["pass", "modify", "escalate", "reject"]
+ScenarioOptionStatus = Literal["draft", "approved", "rejected", "escalated"]
+TwinDecisionValue = Literal["approved", "rejected", "escalated"]
+
+
+class ControlProperties(StrictBaseModel):
+    classification_marking: str = "UNCLASSIFIED//TRAINING"
+    releasability: str = "TRAINING"
+    need_to_know_domain: str = "synthetic-training"
+    source_handling_code: str = "SYNTHETIC"
+
+
+class TwinSubjectRef(StrictBaseModel):
+    subject_type: TwinSubjectType
+    subject_id: str = Field(min_length=1)
+
+
+class ArtifactInput(StrictBaseModel):
+    artifact_id: str | None = None
+    kind: TwinArtifactKind
+    uri: str | None = None
+    content: str | None = Field(default=None, max_length=20000)
+    captured_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    source_system: str = "field_tablet"
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactRecord(StrictBaseModel):
+    artifact_id: str
+    kind: TwinArtifactKind
+    uri: str | None = None
+    sha256: str
+    captured_at_utc: datetime
+    source_system: str
+    controls: ControlProperties
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ObservationInput(StrictBaseModel):
+    observation_id: str | None = None
+    subject_ref: TwinSubjectRef | None = None
+    source_artifact_ids: list[str] = Field(default_factory=list)
+    kind: TwinObservationKind
+    content: dict[str, Any]
+    timestamp_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    geo: dict[str, Any] | None = None
+    confidence: float = Field(default=0.85, ge=0, le=1)
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+
+
+class ObservationRecord(StrictBaseModel):
+    observation_id: str
+    mission_id: str
+    subject_ref: TwinSubjectRef | None = None
+    source_artifact_ids: list[str] = Field(min_length=1)
+    kind: TwinObservationKind
+    content: dict[str, Any]
+    timestamp_utc: datetime
+    geo: dict[str, Any] | None = None
+    confidence: float = Field(ge=0, le=1)
+    controls: ControlProperties
+
+
+class EnvironmentState(StrictBaseModel):
+    environment_state_id: str
+    mission_id: str
+    weather: str | None = None
+    terrain: str | None = None
+    visibility: str | None = None
+    temperature_c: float | None = None
+    precipitation: str | None = None
+    wind_speed: float | None = None
+    captured_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+
+
+class OperationalStateVector(StrictBaseModel):
+    fatigue_burden: float = Field(ge=0, le=1)
+    situational_clarity: float = Field(ge=0, le=1)
+    cohesion: float = Field(ge=0, le=1)
+    leader_decision_quality: float = Field(ge=0, le=1)
+    mission_tempo_risk: float = Field(ge=0, le=1)
+    training_challenge_gap: float = Field(ge=-1, le=1)
+
+
+class StateUncertainty(StrictBaseModel):
+    overall: float = Field(ge=0, le=1)
+    by_field: dict[str, float] = Field(default_factory=dict)
+
+
+class StateEstimate(StrictBaseModel):
+    state_estimate_id: str
+    subject_type: Literal["person", "team", "mission"]
+    subject_id: str = Field(min_length=1)
+    state_vector: OperationalStateVector
+    uncertainty: StateUncertainty
+    evidence_bundle_id: str
+    model_version: str
+    valid_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+
+
+class EvidenceBundleArtifact(StrictBaseModel):
+    artifact_id: str
+    kind: TwinArtifactKind
+    sha256: str
+    captured_at_utc: datetime
+    source_system: str
+
+
+class EvidenceBundleObservation(StrictBaseModel):
+    observation_id: str
+    kind: TwinObservationKind
+    confidence: float = Field(ge=0, le=1)
+    summary: str
+
+
+class EvidenceBundleModelTrace(StrictBaseModel):
+    stage: str
+    model_name: str
+    model_version: str
+    output_confidence: float = Field(ge=0, le=1)
+
+
+class EvidenceBundlePolicyChecks(StrictBaseModel):
+    classification_ok: bool
+    evidence_threshold_ok: bool
+    safety_ok: bool
+    human_approval_required: bool = True
+
+
+class EvidenceBundleHashChain(StrictBaseModel):
+    previous_action_hash: str
+    current_action_hash: str
+
+
+class EvidenceBundle(StrictBaseModel):
+    bundle_id: str
+    created_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    claim_type: str
+    claim_text: str
+    mission_id: str
+    subject_refs: list[TwinSubjectRef] = Field(default_factory=list)
+    source_artifacts: list[EvidenceBundleArtifact] = Field(default_factory=list)
+    derived_observations: list[EvidenceBundleObservation] = Field(default_factory=list)
+    state_inputs: dict[str, Any] = Field(default_factory=dict)
+    models: list[EvidenceBundleModelTrace] = Field(default_factory=list)
+    policy_checks: EvidenceBundlePolicyChecks
+    hash_chain: EvidenceBundleHashChain
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+
+
+class ScenarioPredictedEffect(StrictBaseModel):
+    target_state_change: str
+    expected_learning_value: float | None = Field(default=None, ge=0, le=1)
+    expected_mission_benefit: float | None = Field(default=None, ge=0, le=1)
+
+
+class ScenarioOption(StrictBaseModel):
+    scenario_option_id: str
+    mission_id: str
+    option_type: ScenarioOptionType
+    title: str
+    narrative: str
+    predicted_effect: ScenarioPredictedEffect
+    risk_score: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    critic_status: ScenarioCriticStatus
+    critic_reasons: list[str] = Field(default_factory=list)
+    evidence_bundle_id: str
+    status: ScenarioOptionStatus = "draft"
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+
+
+class LessonLearned(StrictBaseModel):
+    lesson_id: str
+    mission_id: str
+    category: str
+    summary: str
+    root_cause: str
+    recommended_training_delta: str
+    recommended_mission_delta: str
+    severity: Literal["low", "medium", "high"] = "medium"
+    status: Literal["draft", "approved"] = "draft"
+    evidence_bundle_id: str
+    created_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+
+
+class OperationalTwinDecision(StrictBaseModel):
+    decision_id: str
+    target_object_type: Literal["scenario_option"] = "scenario_option"
+    target_object_id: str
+    actor_id: str
+    decision: TwinDecisionValue
+    comment: str
+    timestamp_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    evidence_bundle_id: str
+
+
+class OperationalTwinRequest(StrictBaseModel):
+    mission_id: str = Field(min_length=1)
+    operator_id: str = Field(min_length=1)
+    mode: TwinMode = "training"
+    team_id: str = Field(min_length=1)
+    training_objective: str | None = None
+    artifacts: list[ArtifactInput] = Field(default_factory=list)
+    observations: list[ObservationInput] = Field(default_factory=list)
+    environment: dict[str, Any] = Field(default_factory=dict)
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+    require_human_approval: bool = True
+
+
+class OperationalTwinResponse(StrictBaseModel):
+    twin_run_id: str
+    mission_id: str
+    mode: TwinMode
+    team_id: str
+    status: Literal["draft", "partially_decided", "completed"] = "draft"
+    artifacts: list[ArtifactRecord]
+    observations: list[ObservationRecord]
+    environment_state: EnvironmentState | None = None
+    state_estimate: StateEstimate
+    evidence_bundle: EvidenceBundle
+    scenario_options: list[ScenarioOption]
+    decisions: list[OperationalTwinDecision] = Field(default_factory=list)
+    lessons_learned: list[LessonLearned] = Field(default_factory=list)
+    created_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ScenarioOptionDecisionRequest(StrictBaseModel):
+    scenario_option_id: str = Field(min_length=1)
+    decision: TwinDecisionValue
+    actor_id: str = Field(min_length=1)
+    comment: str = Field(min_length=1)
+
+
+class ScenarioOptionDecisionResponse(StrictBaseModel):
+    twin_run_id: str
+    scenario_option_id: str
+    status: ScenarioOptionStatus
+    decision: OperationalTwinDecision
+    lesson_learned: LessonLearned | None = None
+    decided_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class AgentRun(StrictBaseModel):
     run_id: str
     status: AgentRunStatus

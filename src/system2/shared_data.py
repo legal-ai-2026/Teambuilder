@@ -15,10 +15,14 @@ from .models import (
     CognitiveAdaptationResponse,
     ContextChunkInput,
     GraphFactInput,
+    OperationalTwinRequest,
+    OperationalTwinResponse,
     RoleRequirement,
     RosterRecommendation,
     ScenarioApprovalRequest,
     ScenarioApprovalResponse,
+    ScenarioOptionDecisionRequest,
+    ScenarioOptionDecisionResponse,
     ScoreRequest,
     Soldier,
     SourceReference,
@@ -540,6 +544,79 @@ def build_scenario_approval_update_event(
         "recorded_at": datetime.now(UTC),
         "actor_id": request.approver_id,
         "reason": request.rationale,
+    }
+
+
+def build_operational_twin_update_event(
+    request: OperationalTwinRequest,
+    response: OperationalTwinResponse,
+) -> dict[str, Any]:
+    payload = {
+        "twin_run_id": response.twin_run_id,
+        "mission_id": response.mission_id,
+        "team_id": response.team_id,
+        "mode": response.mode,
+        "operator_id": request.operator_id,
+        "artifact_ids": [item.artifact_id for item in response.artifacts],
+        "observation_ids": [item.observation_id for item in response.observations],
+        "state_estimate_id": response.state_estimate.state_estimate_id,
+        "evidence_bundle_id": response.evidence_bundle.bundle_id,
+        "scenario_option_ids": [
+            item.scenario_option_id for item in response.scenario_options
+        ],
+        "policy_checks": response.evidence_bundle.policy_checks.model_dump(mode="json"),
+    }
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "operational_twin",
+        "entity_id": response.twin_run_id,
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": response.twin_run_id,
+        "operation": "recommend",
+        "event_payload": payload,
+        "previous_source_hash": None,
+        "new_source_hash": canonical_hash(response.model_dump(mode="json")),
+        "observed_at": response.created_at_utc,
+        "recorded_at": datetime.now(UTC),
+        "actor_id": request.operator_id,
+        "reason": "Operational twin generated draft options with evidence, state, and critic checks.",
+    }
+
+
+def build_operational_twin_decision_update_event(
+    run: OperationalTwinResponse,
+    request: ScenarioOptionDecisionRequest,
+    response: ScenarioOptionDecisionResponse,
+) -> dict[str, Any]:
+    payload = {
+        "twin_run_id": run.twin_run_id,
+        "mission_id": run.mission_id,
+        "team_id": run.team_id,
+        "scenario_option_id": response.scenario_option_id,
+        "decision": request.decision,
+        "actor_id": request.actor_id,
+        "decision_id": response.decision.decision_id,
+        "lesson_id": (
+            response.lesson_learned.lesson_id
+            if response.lesson_learned is not None
+            else None
+        ),
+        "evidence_bundle_id": response.decision.evidence_bundle_id,
+    }
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "operational_twin_option",
+        "entity_id": response.scenario_option_id,
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": run.twin_run_id,
+        "operation": request.decision,
+        "event_payload": payload,
+        "previous_source_hash": None,
+        "new_source_hash": canonical_hash(response.model_dump(mode="json")),
+        "observed_at": response.decided_at_utc,
+        "recorded_at": datetime.now(UTC),
+        "actor_id": request.actor_id,
+        "reason": request.comment,
     }
 
 

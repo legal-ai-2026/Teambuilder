@@ -243,6 +243,9 @@ System 2 must not:
 | `GET /v1/adaptations/{adaptation_id}` | Fetch stored adaptation | no |
 | `GET /v1/missions/{mission_id}/adaptations` | List stored adaptations for a mission | no |
 | `POST /v1/adaptations/{adaptation_id}/approval` | Record instructor approve/reject decision | yes |
+| `POST /v1/operational-twin/runs` | Normalize multimodal evidence, estimate operational state, and draft governed options | yes |
+| `GET /v1/operational-twin/runs/{twin_run_id}` | Fetch operational twin run with evidence bundle and draft/decided options | no |
+| `POST /v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` | Record approve/reject/escalate decision and lesson draft | yes |
 | `POST /v1/score` | Direct roster scoring | audit only |
 | `POST /v1/agent-runs` | Agentic recommendation workflow | yes |
 | `GET /v1/agent-runs/{run_id}` | Fetch run and recommendation | no |
@@ -278,6 +281,41 @@ Current implemented adaptation input:
 Current adaptation evidence source types are `voice_note`, `transcript`,
 `ocr_text`, `checklist`, `patrol_summary`, `aar`, `weather`, `terrain`, and
 `structured_event`.
+
+Current implemented operational twin input:
+
+```json
+{
+  "mission_id": "foundry-twin-demo",
+  "operator_id": "instructor-1",
+  "mode": "training",
+  "team_id": "alpha-1",
+  "training_objective": "Train systems thinking under fatigue.",
+  "artifacts": [
+    {
+      "kind": "audio",
+      "content": "Two missed comms acknowledgements. Leader lost terrain, timing, support, civilian movement, and delayed comms relay relationships under fatigue."
+    },
+    {
+      "kind": "sleep_food_log",
+      "content": "Median team sleep was 4.1 hours.",
+      "metadata": {"sleep_hours": 4.1}
+    }
+  ],
+  "environment": {
+    "weather": "cold wind",
+    "terrain": "rough wooded draw",
+    "temperature_c": 3,
+    "wind_speed": 18
+  }
+}
+```
+
+Operational twin runs append `entity_update_events` with entity type
+`operational_twin`. Option decisions append `operational_twin_option` events.
+The payloads carry mission/team IDs, evidence bundle ID, state estimate ID,
+scenario option IDs, decision IDs, and lesson IDs when an approved option emits
+a lesson draft.
 
 Current implemented score input:
 
