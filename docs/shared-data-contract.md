@@ -32,6 +32,260 @@ update as an append-only event so drift can be detected over time.
 No system should overwrite another system's canonical records. Cross-system
 corrections must be written as new update events with provenance.
 
+## System 2 Project Details
+
+Repository:
+
+```text
+c2d2-teambuilder-model
+```
+
+Runtime service:
+
+```text
+FastAPI app: system2.api:app
+Default local URL: http://127.0.0.1:8000
+```
+
+System 2 is the roster recommendation and agentic decision-support service. It
+does not own soldier identity, training authority, final deployment outcomes, or
+published assignment authority. It consumes those records, produces
+recommendations, records its own reasoning and audit trail, and waits for human
+approval before finalization.
+
+### What System 2 Does
+
+System 2 can:
+
+- score soldiers against mission role slots
+- produce a primary roster
+- produce a second-choice roster
+- explain confidence and model disagreement
+- run fairness/proxy audits
+- record agent steps and evidence
+- ingest retrieval context into pgvector
+- ingest relationship facts into FalkorDB
+- record human approval or rejection
+- write hash-chained audit records
+
+System 2 must not:
+
+- mutate soldier-of-record data owned by another system
+- mutate training observations owned by System 1
+- mutate deployment outcomes owned by System 3
+- publish final orders or assignments by itself
+- treat Redis, pgvector, or FalkorDB as canonical authority
+
+### System 2 Endpoints Other Apps Can Use
+
+| Endpoint | Purpose | Mutates shared state |
+|---|---|---|
+| `GET /v1/healthz` | Check service and backend selection | no |
+| `POST /v1/score` | Direct roster scoring | audit only |
+| `POST /v1/agent-runs` | Agentic recommendation workflow | yes |
+| `GET /v1/agent-runs/{run_id}` | Fetch run and recommendation | no |
+| `POST /v1/agent-runs/{run_id}/approval` | Record approve/reject decision | yes |
+| `POST /v1/context/chunks` | Ingest retrievable policy/SOP/context chunks | yes |
+| `POST /v1/graph/facts` | Ingest derived relationship facts | yes |
+| `POST /admin/disable` | Disable scoring | audit/control only |
+| `POST /admin/enable` | Re-enable scoring | audit/control only |
+
+### System 2 Inputs
+
+Current implemented score input:
+
+```json
+{
+  "mission_id": "raid-tonight",
+  "candidate_count": 80,
+  "seed": 42,
+  "candidates": [],
+  "roles": []
+}
+```
+
+For integrated operation, other apps should move toward ID-only inputs:
+
+```json
+{
+  "mission_id": "raid-tonight",
+  "candidate_pool_id": "pool-2026-05-02-a"
+}
+```
+
+System 2 still needs the same underlying facts after resolving IDs:
+
+- mission requirements
+- role slots
+- candidate soldiers
+- current soldier profile projection
+- training and competency projections
+- deployment/outcome history if available
+- policy/SOP context chunks
+- graph relationships such as required roles, skills, and qualifications
+
+Candidate fields currently consumed by the scorer:
+
+| Field | Usage |
+|---|---|
+| `soldier_id` | trace and roster identity |
+| `unit_id` | Bayes-compatible pooled unit effect; hashed in audit |
+| `mos` | role qualification and pooled MOS effect; hashed in audit |
+| `age_years` | proxy/fairness context; not directly scored |
+| `two_mile_run_sec` | physical readiness |
+| `self_efficacy_score` | readiness signal |
+| `peer_rating_z` | leadership/cohesion signal |
+| `home_unit_ranger_density` | experience/context signal |
+| `acft_score` | readiness signal and hard role gate |
+| `operational_readiness` | mission success signal |
+| `prior_missions` | experience and uncertainty |
+| `medical_risk` | safety/risk penalty |
+| `landing_asymmetry_score` | safety/risk penalty |
+| `hip_extension_power_w` | currently recorded, adapter expansion field |
+| `change_of_direction_index` | local pattern signal |
+| `fatigue_index` | safety/risk penalty |
+| `sandbox_score` | simulation performance signal |
+| `milestones` | readiness terms |
+| `competencies` | role-specific fit terms |
+| `protected_race` | fairness audit only |
+| `protected_gender` | fairness audit only |
+
+Role fields currently consumed:
+
+| Field | Usage |
+|---|---|
+| `slot_id` | assignment slot identity |
+| `role` | role-specific scoring weights |
+| `required_mos` | hard disqualifier when set |
+| `min_acft` | hard disqualifier |
+
+### System 2 Outputs
+
+Direct score output:
+
+```json
+{
+  "mission_id": "raid-tonight",
+  "roster": [],
+  "second_choice_roster": [],
+  "fairness_audit": {},
+  "career_forecast": {},
+  "trace": {}
+}
+```
+
+Each roster item contains:
+
+- `slot_id`
+- `role`
+- `soldier_id`
+- `fit_score`
+- `p_success_tabpfn`
+- `p_success_bayes_mean`
+- `model_disagreement`
+- `p_success_bayes_ci`
+- `confidence`
+- `narrative`
+- `key_strengths`
+- `risk_factors`
+- `second_choice_id`
+
+Agent run output contains:
+
+- `run_id`
+- `status`
+- original request
+- ordered agent steps
+- recommendation payload
+- approval payload if decided
+- error if failed
+- timestamps
+
+Other apps should treat `run_id` as the durable handle for System 2 decisions.
+The frontend should fetch details by `run_id` instead of recomputing local
+decision state.
+
+### How System 2 Makes Recommendations
+
+System 2 scores every `(soldier, role)` pair rather than ranking soldiers
+globally.
+
+1. `role_fit` computes deterministic role fit from physical readiness,
+   operational readiness, experience, simulation score, milestones, and
+   role-specific competencies.
+2. Medical risk, landing asymmetry, and fatigue reduce fit.
+3. Protected attributes are excluded from scoring and assignment.
+4. A TabPFN-compatible deterministic probability is computed.
+5. A Bayes-compatible pooled probability is computed from unit and MOS context.
+6. The two probabilities are blended.
+7. Model disagreement determines confidence:
+   - `< 0.10`: `high`
+   - `0.10` to `0.25`: `medium`
+   - `> 0.25`: `low`, with score demotion
+8. Required MOS and minimum ACFT create hard disqualifiers.
+9. The roster is solved with Hungarian assignment.
+10. The second-choice roster is solved by blocking primary `(soldier, role)`
+    pairs and solving again.
+11. Fairness audit, narrative, career forecast, trace metadata, and audit
+    records are generated.
+
+### System 2 Backend Ownership
+
+| Store | System 2 objects |
+|---|---|
+| Postgres | `system2_agent_runs`, `system2_audit_log`, `system2_context_chunks` |
+| pgvector | `system2_context_chunks.embedding` |
+| Redis | `system2:agent-run:{run_id}:status`, `system2:agent-run:{run_id}:lock` |
+| FalkorDB | derived graph facts accepted through `/v1/graph/facts` |
+
+System 2 table creation is handled by its adapters when Postgres/pgvector
+backends are enabled. Shared tables such as `soldiers_current`,
+`entity_update_events`, `decision_snapshots`, and `drift_observations` are
+defined by this contract and should be migrated consistently across all apps.
+
+### What Other Projects Should Provide To System 2
+
+System 1 should provide:
+
+- training observations by `soldier_id`
+- competency and milestone projections
+- simulation outcomes
+- graph facts for skills, qualifications, and training relationships
+- source hashes for every projection
+
+System 3 should provide:
+
+- prior assignments
+- deployment outcomes
+- mission outcome observations
+- graph facts linking assignments, missions, soldiers, and outcomes
+- source hashes for every projection
+
+Frontend should provide:
+
+- `mission_id`
+- `candidate_pool_id` once implemented
+- `run_id` for fetching decision details
+- approval/rejection decision, approver ID, and rationale
+
+### What Other Projects Can Rely On From System 2
+
+Other systems can rely on System 2 to produce:
+
+- a durable `run_id`
+- recommendation status
+- selected roster and second-choice roster
+- confidence and disagreement fields for each assignment
+- fairness audit payload
+- trace metadata
+- audit records
+- approval/rejection details
+- context chunk records accepted through ingestion
+- graph facts accepted through ingestion
+
+They should not treat a recommendation as final until the agent run status is
+`completed` and an approval payload exists.
+
 ## Canonical IDs
 
 | Entity | ID field | Format guidance |
