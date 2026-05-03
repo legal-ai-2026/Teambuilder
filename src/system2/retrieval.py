@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+from .models import ContextChunkInput
 
 
 PGVECTOR_SCHEMA_SQL = """
@@ -46,8 +49,14 @@ class ContextRetriever(Protocol):
     ) -> list[RetrievedContext]:
         ...
 
+    def upsert(self, chunks: Sequence[ContextChunkInput]) -> int:
+        ...
+
 
 class LocalContextRetriever:
+    def __init__(self, contexts: Sequence[RetrievedContext] | None = None) -> None:
+        self._contexts = list(contexts) if contexts is not None else _default_contexts()
+
     def retrieve(
         self,
         query: str,
@@ -55,30 +64,29 @@ class LocalContextRetriever:
         query_embedding: Sequence[float] | None = None,
         limit: int = 5,
     ) -> list[RetrievedContext]:
-        contexts = [
-            RetrievedContext(
-                source="assets/feature-spec.md",
-                title="Feature contract",
-                content=(
-                    "Protected attributes are fairness-only and must not enter "
-                    "success scoring or assignment. Physical and medical fields "
-                    "require job-related rationale."
-                ),
-                score=1.0,
-                metadata={"backend": "local"},
-            ),
-            RetrievedContext(
-                source="docs/architecture.md",
-                title="Operational scoring contract",
-                content=(
-                    "The agent workflow sequences deterministic tools, preserves "
-                    "traceable outputs, and requires human approval before finalization."
-                ),
-                score=0.9,
-                metadata={"backend": "local"},
-            ),
-        ]
+        query_terms = query.lower().split()
+        contexts = sorted(
+            self._contexts,
+            key=lambda context: _text_score(query_terms, context),
+            reverse=True,
+        )
         return contexts[:limit]
+
+    def upsert(self, chunks: Sequence[ContextChunkInput]) -> int:
+        by_id = {
+            str(context.metadata.get("chunk_id", f"{context.source}:{context.title}")): context
+            for context in self._contexts
+        }
+        for chunk in chunks:
+            by_id[chunk.chunk_id] = RetrievedContext(
+                source=chunk.source,
+                title=chunk.title,
+                content=chunk.content,
+                score=1.0,
+                metadata={**chunk.metadata, "chunk_id": chunk.chunk_id, "backend": "local"},
+            )
+        self._contexts = list(by_id.values())
+        return len(chunks)
 
 
 class PgVectorContextRetriever:
@@ -109,6 +117,36 @@ class PgVectorContextRetriever:
         if query_embedding:
             return self._retrieve_by_embedding(query_embedding, limit=limit)
         return self._retrieve_by_text(query, limit=limit)
+
+    def upsert(self, chunks: Sequence[ContextChunkInput]) -> int:
+        sql = f"""
+            INSERT INTO {self.table_name} (
+                chunk_id, source, title, content, metadata, embedding
+            )
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s::vector)
+            ON CONFLICT (chunk_id) DO UPDATE SET
+                source = EXCLUDED.source,
+                title = EXCLUDED.title,
+                content = EXCLUDED.content,
+                metadata = EXCLUDED.metadata,
+                embedding = EXCLUDED.embedding
+        """
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                for chunk in chunks:
+                    cursor.execute(
+                        sql,
+                        (
+                            chunk.chunk_id,
+                            chunk.source,
+                            chunk.title,
+                            chunk.content,
+                            json.dumps(chunk.metadata, sort_keys=True),
+                            embedding_literal(chunk.embedding) if chunk.embedding is not None else None,
+                        ),
+                    )
+            connection.commit()
+        return len(chunks)
 
     def _retrieve_by_embedding(self, query_embedding: Sequence[float], *, limit: int) -> list[RetrievedContext]:
         embedding = embedding_literal(query_embedding)
@@ -165,3 +203,34 @@ class PgVectorContextRetriever:
 
 def embedding_literal(values: Sequence[float]) -> str:
     return "[" + ",".join(f"{float(value):.8g}" for value in values) + "]"
+
+
+def _default_contexts() -> list[RetrievedContext]:
+    return [
+        RetrievedContext(
+            source="assets/feature-spec.md",
+            title="Feature contract",
+            content=(
+                "Protected attributes are fairness-only and must not enter "
+                "success scoring or assignment. Physical and medical fields "
+                "require job-related rationale."
+            ),
+            score=1.0,
+            metadata={"backend": "local", "chunk_id": "feature-contract"},
+        ),
+        RetrievedContext(
+            source="docs/architecture.md",
+            title="Operational scoring contract",
+            content=(
+                "The agent workflow sequences deterministic tools, preserves "
+                "traceable outputs, and requires human approval before finalization."
+            ),
+            score=0.9,
+            metadata={"backend": "local", "chunk_id": "architecture-agent-workflow"},
+        ),
+    ]
+
+
+def _text_score(query_terms: list[str], context: RetrievedContext) -> int:
+    haystack = f"{context.title} {context.content} {context.source}".lower()
+    return sum(term in haystack for term in query_terms)

@@ -3,7 +3,16 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from system2.api import create_agent_run, disable, enable, get_agent_run, record_agent_run_approval, score, score_v1
+from system2.api import (
+    create_agent_run,
+    disable,
+    enable,
+    get_agent_run,
+    ingest_context_chunks,
+    record_agent_run_approval,
+    score,
+    score_v1,
+)
 from system2.agent_orchestrator import AgentOrchestrator
 from system2.agent_state import InMemoryAgentStateStore, RedisAgentStateStore
 from system2.agent_stack import build_agent_orchestrator
@@ -12,7 +21,15 @@ from system2.audit import AuditLog, validate_hash_chain
 from system2.config import InfraSettings, redact_url
 from system2.data import default_roles, generate_soldiers
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
-from system2.models import AgentApprovalDecision, AgentApprovalRequest, AgentRunRequest, AgentRunStatus, ScoreRequest
+from system2.models import (
+    AgentApprovalDecision,
+    AgentApprovalRequest,
+    AgentRunRequest,
+    AgentRunStatus,
+    ContextChunkInput,
+    ContextIngestRequest,
+    ScoreRequest,
+)
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
 from system2.graph import LocalGraphContextProvider, cypher_quote, parse_falkordb_rows
@@ -165,6 +182,44 @@ def test_local_context_retriever_returns_packaged_context() -> None:
     assert len(contexts) == 1
     assert contexts[0].source == "assets/feature-spec.md"
     assert "Protected attributes" in contexts[0].content
+
+
+def test_local_context_retriever_ingests_chunks() -> None:
+    retriever = LocalContextRetriever()
+
+    count = retriever.upsert(
+        [
+            ContextChunkInput(
+                chunk_id="policy-1",
+                source="policy",
+                title="Commander approval",
+                content="Human approval is required before finalizing recommendations.",
+                metadata={"kind": "policy"},
+            )
+        ]
+    )
+    contexts = retriever.retrieve("approval finalizing", limit=1)
+
+    assert count == 1
+    assert contexts[0].metadata["chunk_id"] == "policy-1"
+
+
+def test_context_ingest_api_uses_configured_retriever() -> None:
+    result = ingest_context_chunks(
+        ContextIngestRequest(
+            chunks=[
+                ContextChunkInput(
+                    chunk_id="api-context-1",
+                    source="operator-note",
+                    title="Approval note",
+                    content="Route approval through the authorized command reviewer.",
+                )
+            ]
+        )
+    )
+
+    assert result.chunk_count == 1
+    assert result.chunk_ids == ["api-context-1"]
 
 
 def test_pgvector_schema_and_embedding_literal_are_stable() -> None:

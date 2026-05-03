@@ -5,7 +5,15 @@ from fastapi import FastAPI, HTTPException
 from . import __version__
 from .agent_stack import build_agent_orchestrator
 from .config import InfraSettings
-from .models import AgentApprovalRequest, AgentRun, AgentRunRequest, RosterRecommendation, ScoreRequest
+from .models import (
+    AgentApprovalRequest,
+    AgentRun,
+    AgentRunRequest,
+    ContextIngestRequest,
+    ContextIngestResult,
+    RosterRecommendation,
+    ScoreRequest,
+)
 from .service import SelectionService
 
 
@@ -73,6 +81,16 @@ def record_agent_run_approval(run_id: str, request: AgentApprovalRequest) -> Age
     if run is None:
         raise HTTPException(status_code=404, detail="agent run not found")
     return run
+
+
+@app.post("/v1/context/chunks", response_model=ContextIngestResult)
+def ingest_context_chunks(request: ContextIngestRequest) -> ContextIngestResult:
+    count = agent_orchestrator.retriever.upsert(request.chunks)
+    return ContextIngestResult(
+        backend=agent_orchestrator.settings.retrieval_backend,
+        chunk_count=count,
+        chunk_ids=[chunk.chunk_id for chunk in request.chunks],
+    )
 
 
 @app.post("/admin/disable")

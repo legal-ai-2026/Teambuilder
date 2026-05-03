@@ -187,6 +187,25 @@ class AgentApproval(StrictBaseModel):
     decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ContextChunkInput(StrictBaseModel):
+    chunk_id: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    metadata: dict[str, object] = Field(default_factory=dict)
+    embedding: list[float] | None = None
+
+
+class ContextIngestRequest(StrictBaseModel):
+    chunks: list[ContextChunkInput] = Field(min_length=1)
+
+
+class ContextIngestResult(StrictBaseModel):
+    backend: str
+    chunk_count: int
+    chunk_ids: list[str]
+
+
 class AgentRun(StrictBaseModel):
     run_id: str
     status: AgentRunStatus
