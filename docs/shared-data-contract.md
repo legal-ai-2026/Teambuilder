@@ -32,6 +32,160 @@ update as an append-only event so drift can be detected over time.
 No system should overwrite another system's canonical records. Cross-system
 corrections must be written as new update events with provenance.
 
+## System 1 Project Details
+
+System 1 is the Ranger adversarial training agent. It is an API-only backend
+that receives instructor ingest envelopes, extracts observations, writes graph
+facts, drafts scenario recommendations, applies policy checks, waits for
+instructor approval, and emits decision events for the other systems.
+
+| Area | Detail |
+|---|---|
+| Service name | System 1 Ranger adversarial training agent |
+| Public API root | `/v1` |
+| Primary input | `IngestEnvelope` submitted to `POST /v1/ingest` |
+| Primary output | `RunRecord` with observations, recommendations, audit events, dashboard summary, and outbox events |
+| Human gate | `/v1/recommendations/{recommendation_id}/decision` |
+| System-owned IDs | `run_id`, `observation_id`, `recommendation_id`, `event_id` |
+| External IDs | `soldier_id`, `instructor_id`, `platoon_id`, `patrol_id`, `mission_id`, `task_code` |
+| Owned durable state | run state, audit events, outbox events, observations, approved recommendation graph nodes |
+| Not owned | roster/person profiles, mission plans, System 2 trajectory/recommendation records, System 3 lessons-learned records |
+
+Other projects should treat System 1 as the owner of short-horizon scenario
+observations and instructor-approved scenario recommendations. They should not
+write directly into `ranger_runs`, `ranger_audit_events`, or
+`ranger_outbox_events`.
+
+### System 1 Endpoints Other Apps Can Use
+
+| Endpoint | Purpose | Important response data |
+|---|---|---|
+| `GET /v1/healthz` | Service/provider/infra health | dependency and provider availability |
+| `POST /v1/ingest` | Start a new instructor-ingest run | `run_id`, `status=accepted`, original ingest |
+| `GET /v1/runs/{run_id}` | Fetch canonical run state | observations, recommendations, KG summary, errors |
+| `GET /v1/dashboard/runs/{run_id}` | Presentation-neutral run summary | GO/NOGO counts, readiness score, active recommendations |
+| `GET /v1/runs/{run_id}/audit` | Inspect lifecycle/decision events | ordered immutable audit events |
+| `POST /v1/recommendations/{recommendation_id}/decision` | Approve or reject a recommendation | final recommendation status |
+| `GET /v1/outbox` | Poll decision events | pending outbox events |
+| `POST /v1/outbox/{event_id}/published` | Mark consumed outbox event | `event_id`, `status=published` |
+
+Future endpoints named by System 1 but not implemented yet:
+
+- `GET /v1/soldier/{id}/training-trajectory`
+- `POST /v1/lessons-learned`
+
+Until those exist, System 2 and System 3 should consume System 1 outputs through
+shared stores and the outbox/update-ledger pattern.
+
+### System 1 State Machine
+
+Run statuses:
+
+| Status | Meaning | Who acts |
+|---|---|---|
+| `accepted` | ingest validated and persisted | System 1 background processor |
+| `processing` | STT/OCR/extraction/KG/reasoning/policy running | System 1 |
+| `pending_approval` | recommendations ready for instructor decision | frontend/instructor |
+| `completed` | all recommendations approved, rejected, or blocked | System 2/System 3 may consume outbox |
+| `failed` | processing failed | operator/caller |
+
+Recommendation statuses:
+
+| Status | Meaning | Downstream rule |
+|---|---|---|
+| `pending` | policy allowed, instructor has not decided | not approved training intent |
+| `approved` | instructor approved | Systems 2/3 may use as decision signal |
+| `rejected` | instructor rejected | Systems 2/3 may use as negative feedback |
+| `blocked` | policy rejected before approval | do not execute; use reasons for analysis |
+
+### System 1 Inputs And Outputs
+
+Inbound `IngestEnvelope` fields:
+
+- `envelope_id`
+- `instructor_id`
+- `platoon_id`
+- `mission_id`
+- `phase`: `Benning`, `Mountain`, or `Florida`
+- `timestamp_utc`
+- `geo`
+- optional `audio_b64`
+- optional `image_b64[]`
+- optional `free_text`
+
+At least one of `audio_b64`, `image_b64`, or `free_text` is required.
+
+Derived observation fields:
+
+- `observation_id`
+- `soldier_id`
+- `task_code`
+- redacted `note`
+- `rating`: `GO`, `NOGO`, or `UNCERTAIN`
+- `timestamp_utc`
+- `source`: `audio`, `image`, `free_text`, or `synthetic`
+
+Recommendation records include:
+
+- `recommendation_id`
+- `target_soldier_id`
+- `rationale`
+- `development_edge`
+- `proposed_modification`
+- `doctrine_refs`
+- `safety_checks`
+- `estimated_duration_min`
+- `requires_resources`
+- `risk_level`
+- `fairness_score`
+- `policy.allowed`
+- `policy.reasons`
+- final `status`
+
+System 1 outbox events currently contain recommendation ID, decision status,
+and target soldier ID. Consumers should resolve the full run and audit context
+through `GET /v1/runs/{run_id}` and `GET /v1/runs/{run_id}/audit`.
+
+### How System 1 Changes Shared Data
+
+| Trigger | Store | Record changed | Data effect |
+|---|---|---|---|
+| `POST /v1/ingest` | Postgres `ranger_runs` | `RunRecord` | inserts accepted run with inbound envelope |
+| `POST /v1/ingest` | Postgres `ranger_audit_events` | `run_accepted` | appends immutable lifecycle event |
+| background start | Redis | `ranger:run-lease:{run_id}` | creates short-lived run lease |
+| background start | Postgres `ranger_audit_events` | `run_processing_started` | appends immutable lifecycle event |
+| extraction completes | Postgres `ranger_runs.record` | transcript/OCR/observations | updates materialized run state |
+| observation graph write | FalkorDB graph `ranger` | mission/platoon/soldier/task/observation facts | `MERGE` canonical IDs and relationships |
+| recommendation drafting | Postgres `ranger_runs.record` | recommendations/status | stores draft and policy outcomes |
+| processing completes/fails | Postgres `ranger_audit_events` | status/failure event | appends immutable lifecycle event |
+| approve/reject | Postgres `ranger_runs.record` | recommendation status | materialized status update |
+| approve recommendation | FalkorDB graph `ranger` | `Recommendation` node | links recommendation to target soldier |
+| approve/reject | Postgres `ranger_audit_events` | decision event | appends immutable approval/rejection audit |
+| approve/reject | Postgres `ranger_outbox_events` | integration event | appends pending event for Systems 2/3 |
+| outbox published | Postgres `ranger_outbox_events` | event status | marks event `published` after consumer applies it |
+| vector upsert adapter | Postgres `ranger_vector_documents` | semantic document | upserts text, metadata, and embedding |
+
+System 1 does not delete shared records and does not write System 2 or System 3
+owned tables.
+
+### System 1 Current Tables And Keys
+
+| Table/key | Mutability | Purpose |
+|---|---|---|
+| `ranger_runs` | mutable materialized state | run status, ingest envelope, observations, KG summary, recommendation records, errors |
+| `ranger_audit_events` | append-only | run lifecycle and instructor decisions |
+| `ranger_outbox_events` | append-only except `status` | integration events for consumers |
+| `ranger_vector_documents` | upsert by `(namespace, document_id)` | semantic text and embeddings |
+| `ranger:run-lease:{run_id}` | TTL Redis key | active-run lease |
+
+System 1 current gaps:
+
+- dedicated update ledger table
+- `evidence_refs` and `target_ids` on all output contracts
+- graph edges from recommendations back to observations/tasks
+- automatic pgvector ingestion in the ingest workflow
+- cross-system detail lookup endpoints by canonical ID
+
 ## System 2 Project Details
 
 Repository:
@@ -285,6 +439,197 @@ Other systems can rely on System 2 to produce:
 
 They should not treat a recommendation as final until the agent run status is
 `completed` and an approval payload exists.
+
+## System 3 Project Details
+
+System 3 is the combat deployment intelligence and COA planning service. It
+generates, validates, stores, retrieves, and reviews COA planning runs. It
+consumes mission context and produces derived planning outputs; it must not
+overwrite canonical person, unit, intel, ROE, terrain, or enemy-pattern records.
+
+| Area | Detail |
+|---|---|
+| App ID | `system3` |
+| Package | `spire_deploy` |
+| API service | `spire_deploy.gateway.main:app` |
+| API title | `System 3 Operations Gateway` |
+| Primary responsibility | COA planning, rehearsal scenarios, planning guardrails, approval tracking |
+| Current canonical read implementation | `SyntheticRepository` backed by `data/synthetic/` |
+| Current checkpoint store | Redis when configured, otherwise in-memory |
+| Current graph/vector usage | health-checkable, not yet in recommendation path |
+| Primary run ID | `planning-run-{uuid}` |
+| Derived output IDs | `coa-{missionId}-{seq}`, `scenario-{missionId}-{seq}` |
+| Authentication | `X-API-Key` matching `SYSTEM3_API_KEY` |
+
+System 3 owns these derived records:
+
+- `PlanningRun`
+- `AgentOutput`
+- `COA`
+- `RehearsalScenario`
+- `COAApprovalResponse`
+- future `DriftFinding`
+
+System 3 consumes but does not own:
+
+- `Person` / `Soldier`
+- `Unit`
+- `Mission`
+- `MissionPhase`
+- `ROERule`
+- `IntelReport`
+- `EnemyPattern`
+- `EnemyEntity`
+- `TerrainFeature`
+
+### System 3 Endpoints Other Apps Can Use
+
+| Endpoint | Purpose | Caller sends IDs |
+|---|---|---|
+| `GET /v1/healthz` | service health | no |
+| `GET /v1/healthz/infrastructure` | redacted datastore reachability | no |
+| `GET /v1/mission-context/{missionId}` | resolved mission context projection | `missionId` |
+| `POST /v1/mission/assignment` | local mission assignment update | `missionId`, `soldierIds` |
+| `POST /v1/coa/propose` | create a planning run | `missionId` |
+| `GET /v1/coa/proposals/{runId}` | fetch stored planning run | `runId` |
+| `POST /v1/coa/proposals/{runId}/approval` | approve or reject a COA | `runId`, `coaId` |
+
+### System 3 Inputs And Outputs
+
+COA proposal request:
+
+```json
+{
+  "missionId": "mission-compound-iron",
+  "requestedBy": "operator.id",
+  "includeRehearsalScenarios": true
+}
+```
+
+Mission assignment request:
+
+```json
+{
+  "missionId": "mission-compound-iron",
+  "soldierIds": ["soldier-viper-31-actual"],
+  "requestedBy": "operator.id",
+  "justification": "Assignment changed during planning."
+}
+```
+
+COA approval request:
+
+```json
+{
+  "coaId": "coa-mission-compound-iron-1",
+  "reviewedBy": "commander.id",
+  "decision": "Approve",
+  "justification": "Approved after review."
+}
+```
+
+COA proposal responses include:
+
+- `runId`
+- `missionId`
+- `producedAt`
+- proposed `coas`
+- optional `rehearsalScenarios`
+- ordered `agentTrace`
+
+Infrastructure health responses must redact credentials and must not expose
+full credential-bearing URLs.
+
+### System 3 Agent Trace And Current Logic
+
+Current agent names:
+
+- `MissionContextAgent`
+- `EnemyPatternMinerAgent`
+- `ScenarioGeneratorAgent`
+- `COACriticAgent`
+- `PlanningGuardAgent`
+
+Current deterministic logic:
+
+- `EnemyPatternMinerAgent` sorts mission-linked enemy patterns by confidence.
+- `ScenarioGeneratorAgent` creates `GroundConvoy`, `AirAssault`, and
+  `DismountedPatrol` variants.
+- `COACriticAgent` creates one COA per scenario.
+- `riskScore` is deterministic by scenario index.
+- `roeStatus` is derived from keywords in the COA summary.
+- `PlanningGuardAgent` blocks invalid outputs before response persistence.
+
+Current guardrails:
+
+- classification cannot exceed mission ceiling
+- COAs cannot be pre-approved before human review
+- COAs must cite mission ROE
+- COAs must cite only mission-context intel
+- scenarios must cite enemy patterns
+- scenarios must cite mission ROE
+
+Current `agentTrace` references are object-level only. Shared-infra persistence
+must enrich each reference with `recordVersion`, `recordHash`, and optionally
+`fieldPath`.
+
+### How System 3 Changes Shared Data
+
+| Endpoint | Reads | Writes now | Target persistent writes |
+|---|---|---|---|
+| `GET /v1/mission-context/{missionId}` | mission context by ID | none | none |
+| `POST /v1/mission/assignment` | mission and soldier IDs | in-memory mission assignment | update event, assignment version, graph edges |
+| `POST /v1/coa/propose` | mission context, ROE, intel, patterns, terrain | Redis or memory planning run | planning runs, agent outputs, COAs, scenarios, graph edges, output versions |
+| `GET /v1/coa/proposals/{runId}` | stored planning run | none | none |
+| `POST /v1/coa/proposals/{runId}/approval` | run and COA | updates stored COA state | update event, COA state/version, approval event |
+| `GET /v1/healthz/infrastructure` | env config and reachability | none | none |
+
+System 3 Redis checkpoint key:
+
+```text
+system3:planning-run:{runId}
+```
+
+Current TTL:
+
+```text
+86400 seconds
+```
+
+Redis is a checkpoint/cache only. Other projects should use APIs now and
+Postgres `planning_runs` / `agent_outputs` when persistence is added.
+
+### System 3 Drift Triggers
+
+System 3 outputs should be checked for drift when any of these source records
+change:
+
+- mission objective
+- mission classification ceiling
+- mission phases
+- mission assignments
+- ROE rules
+- cited intel reports
+- selected enemy patterns
+- terrain features used by a scenario
+- graph relationships connecting the mission to source data
+- embeddings for cited intel, pattern, or lesson text
+
+Drift response:
+
+1. preserve the original run
+2. write a `drift_findings` row
+3. mark affected outputs `NeedsReview`
+4. generate a new planning run if needed
+5. never mutate the old output to appear current
+
+System 3 current gaps:
+
+- durable Postgres planning-run and agent-output persistence
+- graph relationship persistence in the recommendation path
+- pgvector retrieval in the recommendation path
+- append-only update ledgers for mission assignment and approval changes
+- source record versions/hashes on persisted agent outputs
 
 ## Canonical IDs
 
