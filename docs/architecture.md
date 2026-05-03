@@ -73,6 +73,9 @@ Canonical endpoints:
 | `POST` | `/v1/score` | Mission roster scoring |
 | `POST` | `/v1/agent-runs` | Agentic recommendation workflow |
 | `GET` | `/v1/agent-runs/{run_id}` | Agent run lookup |
+| `POST` | `/v1/agent-runs/{run_id}/approval` | Human approval or rejection |
+| `POST` | `/v1/context/chunks` | Retrieval context ingestion |
+| `POST` | `/v1/graph/facts` | Graph fact ingestion |
 | `POST` | `/admin/disable` | Disable scoring |
 | `POST` | `/admin/enable` | Re-enable scoring after an authorized operational action |
 
@@ -141,6 +144,11 @@ deterministic roster recommendation, and human approval. The roster tool remains
 the source of recommendation data; the agent only sequences tools and preserves
 an inspectable run record.
 
+Approval is explicit. Runs that require human approval stop at
+`awaiting_approval`; `POST /v1/agent-runs/{run_id}/approval` moves them to
+`completed` or `rejected` and records approver ID, rationale, decision, and a
+timestamp in the run payload.
+
 Runtime backend selection is environment-driven:
 
 | Backend | Env | Operational adapter | Local fallback |
@@ -152,6 +160,12 @@ Runtime backend selection is environment-driven:
 
 Postgres remains canonical. Redis is only ephemeral coordination state.
 FalkorDB graph facts should be rebuildable from canonical records.
+
+Context ingestion accepts text chunks and optional precomputed embedding
+vectors. This service stores and retrieves those chunks; it does not generate
+embeddings. Graph ingestion accepts derived `(subject, predicate, object)` facts
+for relationship lookup. Both ingestion routes must be protected by the same
+external auth boundary as admin routes.
 
 ## Assignment
 

@@ -71,6 +71,9 @@ through PgBouncer and initializes the agent-run table at startup. Keep
 - `POST /v1/score` - ranks candidates into a 14-slot direct-action roster by default.
 - `POST /v1/agent-runs` - runs the agentic recommendation workflow and returns an approval-ready run.
 - `GET /v1/agent-runs/{run_id}` - fetches an agent run by ID.
+- `POST /v1/agent-runs/{run_id}/approval` - records an authorized approve/reject decision.
+- `POST /v1/context/chunks` - ingests externally embedded context chunks for pgvector retrieval.
+- `POST /v1/graph/facts` - ingests derived relationship facts for FalkorDB graph context.
 - `GET /v1/healthz` - service health and kill-switch state.
 - `POST /admin/disable` - disables scoring.
 - `POST /admin/enable` - re-enables scoring after an authorized operational action.
@@ -105,6 +108,50 @@ curl -X POST http://127.0.0.1:8000/v1/agent-runs \
 The agent workflow records request context, retrieval readiness, graph readiness,
 the deterministic roster recommendation, and the human-approval gate. It does
 not train a model and does not make the final personnel decision.
+
+Record the human decision after review:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/agent-runs/RUN_ID/approval \
+  -H 'content-type: application/json' \
+  -d '{
+    "decision": "approved",
+    "approver_id": "commander-1",
+    "rationale": "Reviewed recommendation, fairness audit, and second choices."
+  }'
+```
+
+Load retrieval context with embeddings generated outside this service:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/context/chunks \
+  -H 'content-type: application/json' \
+  -d '{
+    "chunks": [{
+      "chunk_id": "sop-001",
+      "source": "unit-sop",
+      "title": "Roster approval",
+      "content": "Mission roster recommendations require authorized review.",
+      "metadata": {"kind": "sop"},
+      "embedding": null
+    }]
+  }'
+```
+
+Load derived graph facts:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/graph/facts \
+  -H 'content-type: application/json' \
+  -d '{
+    "facts": [{
+      "subject": "raid-tonight",
+      "predicate": "requires_role",
+      "object": "medic",
+      "metadata": {"slot_id": "MED-1"}
+    }]
+  }'
+```
 
 The agent stack uses these adapters:
 

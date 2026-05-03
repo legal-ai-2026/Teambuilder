@@ -58,16 +58,19 @@ the standard 14-slot roster.
 
 Defines FastAPI routes. `/v1/score` and `/v1/healthz` are canonical. `/score`
 and `/health` are compatibility aliases. `/v1/agent-runs` starts the agentic
-workflow, and `/v1/agent-runs/{run_id}` fetches the stored run. Runtime errors
-from the direct scoring service become HTTP `423` when the engine is disabled;
-assignment failures become HTTP `422`.
+workflow, `/v1/agent-runs/{run_id}` fetches the stored run, and
+`/v1/agent-runs/{run_id}/approval` records approval or rejection. The context
+and graph ingestion routes populate pgvector/FalkorDB-backed agent context.
+Runtime errors from the direct scoring service become HTTP `423` when the
+engine is disabled; assignment failures become HTTP `422`.
 
 `agent_orchestrator.py`
 
 Runs the agent workflow as typed deterministic orchestration. It creates an
 agent run, records context/retrieval/graph/tool steps, calls the roster
 recommendation tool, and ends in either `awaiting_approval`, `completed`, or
-`failed`.
+`failed`. It also records human approval or rejection decisions for runs that
+are waiting on review.
 
 `agent_tools.py`
 
@@ -102,13 +105,14 @@ root for selecting Postgres, Redis, pgvector, and FalkorDB adapters from env.
 
 Defines context retrieval. The local retriever returns packaged operational
 context. The pgvector retriever queries `system2_context_chunks` using either a
-provided embedding vector or a text fallback. It does not create embeddings.
+provided embedding vector or a text fallback. Both retrievers support chunk
+upsert. It does not create embeddings.
 
 `graph.py`
 
 Defines graph context. The local provider derives basic facts from the request.
 The FalkorDB provider uses Redis protocol `GRAPH.QUERY` calls to fetch mission
-relationship facts.
+relationship facts. Both providers support upserting derived graph facts.
 
 `service.py`
 
@@ -174,6 +178,7 @@ mapping.
 - Fairness audit results are returned on every successful score response.
 - Narrative code explains only; it does not decide.
 - Admin endpoints must be protected outside this package.
+- Context and graph ingestion endpoints must be protected outside this package.
 - Agent runs end in `awaiting_approval` by default and require authorized human
   approval before finalization.
 - Redis state must not be treated as authoritative; rebuild from Postgres.
