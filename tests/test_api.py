@@ -43,7 +43,7 @@ from system2.models import (
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
 from system2.graph import LocalGraphContextProvider, cypher_identifier, cypher_quote, parse_falkordb_rows
-from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, embedding_literal
+from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, PgVectorContextRetriever, embedding_literal
 from system2.scoring import feature_hash, role_fit
 from system2.service import SelectionService
 
@@ -265,6 +265,13 @@ def test_pgvector_schema_and_embedding_literal_are_stable() -> None:
     assert "CREATE EXTENSION IF NOT EXISTS vector" in PGVECTOR_SCHEMA_SQL
     assert "embedding vector(1536)" in PGVECTOR_SCHEMA_SQL
     assert embedding_literal([0.1, 0.25, 1]) == "[0.1,0.25,1]"
+
+
+def test_pgvector_retriever_can_defer_migration() -> None:
+    retriever = PgVectorContextRetriever("postgresql://db.internal/system2", auto_migrate=False)
+
+    assert retriever.database_url == "postgresql://db.internal/system2"
+    assert retriever.table_name == "system2_context_chunks"
 
 
 def test_local_graph_context_provider_returns_request_facts() -> None:

@@ -106,7 +106,8 @@ root for selecting Postgres, Redis, pgvector, and FalkorDB adapters from env.
 Defines context retrieval. The local retriever returns packaged operational
 context. The pgvector retriever queries `system2_context_chunks` using either a
 provided embedding vector or a text fallback. Both retrievers support chunk
-upsert. It does not create embeddings.
+upsert, and the pgvector retriever initializes its table when constructed. It
+does not create embeddings.
 
 `graph.py`
 

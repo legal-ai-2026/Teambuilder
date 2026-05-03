@@ -96,10 +96,13 @@ class PgVectorContextRetriever:
         *,
         connection_factory: Any | None = None,
         table_name: str = "system2_context_chunks",
+        auto_migrate: bool = True,
     ) -> None:
         self.database_url = database_url
         self._connection_factory = connection_factory
         self.table_name = table_name
+        if auto_migrate:
+            self.migrate()
 
     def migrate(self) -> None:
         with self._connect() as connection:

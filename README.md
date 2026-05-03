@@ -64,8 +64,10 @@ pip install -e ".[dev,infra]"
 ```
 
 With `AGENT_REPOSITORY_BACKEND=postgres`, the app connects to `DATABASE_URL`
-through PgBouncer and initializes the agent-run table at startup. Keep
-`AGENT_REPOSITORY_BACKEND=memory` for local runs without Postgres.
+through PgBouncer and initializes the agent-run, audit, and pgvector context
+tables at startup when those backends are enabled. Keep
+`AGENT_REPOSITORY_BACKEND=memory`, `AUDIT_BACKEND=file`, and
+`RETRIEVAL_BACKEND=local` for local runs without Postgres.
 
 ## Endpoints
 
