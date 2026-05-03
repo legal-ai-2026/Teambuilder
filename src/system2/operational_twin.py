@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import uuid4
 
 from .audit import AuditLog, AuditSink
+from .decision_quality import assess_operational_twin_run, assess_scenario_option
 from .llm import JsonAgentClient
 from .models import (
     AgentStageTrace,
     ArtifactInput,
     ArtifactRecord,
+    ControlProperties,
     EnvironmentState,
     EvidenceBundle,
     EvidenceBundleArtifact,
@@ -25,6 +27,9 @@ from .models import (
     ObservationRecord,
     OperationalStateVector,
     OperationalTwinDecision,
+    OperationalTwinOutcome,
+    OperationalTwinOutcomeRequest,
+    OperationalTwinOutcomeResponse,
     OperationalTwinRequest,
     OperationalTwinResponse,
     ScenarioOption,
@@ -41,6 +46,7 @@ from .shared_data import (
     InMemorySharedDataSink,
     SharedDataSink,
     build_operational_twin_decision_update_event,
+    build_operational_twin_outcome_update_event,
     build_operational_twin_update_event,
     canonical_hash,
 )
@@ -56,6 +62,75 @@ _OBSERVATION_KINDS = {
     "manual_note",
 }
 _CRITIC_STATUSES = {"pass", "modify", "escalate", "reject"}
+_STALE_SOURCE_THRESHOLD = timedelta(hours=12)
+_PROHIBITED_OBSERVATION_TERMS = (
+    "motive",
+    "intentional sabotage",
+    "because he wanted",
+    "because she wanted",
+    "lazy",
+    "low iq",
+    "innate",
+    "natural talent",
+    "fixed talent",
+    "diagnosed",
+    "diagnosis",
+    "ptsd",
+    "depression",
+    "race",
+    "gender",
+    "religion",
+    "ethnicity",
+)
+_PROMPT_INJECTION_TERMS = (
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "system prompt",
+    "developer message",
+    "approve unsafe",
+    "bypass human",
+    "override policy",
+    "do not follow",
+)
+
+
+OPERATIONAL_TWIN_RUNS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS system2_operational_twin_runs (
+    twin_run_id text PRIMARY KEY,
+    mission_id text NOT NULL,
+    team_id text NOT NULL,
+    status text NOT NULL,
+    mode text NOT NULL,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    action_hash text,
+    payload jsonb NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system2_operational_twin_runs_twin_run_id
+    ON system2_operational_twin_runs (twin_run_id);
+
+CREATE INDEX IF NOT EXISTS idx_system2_operational_twin_runs_mission_id
+    ON system2_operational_twin_runs (mission_id);
+
+CREATE INDEX IF NOT EXISTS idx_system2_operational_twin_runs_team_id
+    ON system2_operational_twin_runs (team_id);
+
+CREATE INDEX IF NOT EXISTS idx_system2_operational_twin_runs_status
+    ON system2_operational_twin_runs (status);
+
+CREATE INDEX IF NOT EXISTS idx_system2_operational_twin_runs_mode
+    ON system2_operational_twin_runs (mode);
+
+CREATE INDEX IF NOT EXISTS idx_system2_operational_twin_runs_created_at
+    ON system2_operational_twin_runs (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_system2_operational_twin_runs_updated_at
+    ON system2_operational_twin_runs (updated_at);
+"""
+
+
+ConnectionFactory = Callable[[], Any]
 
 
 class OperationalTwinRepository(Protocol):
@@ -91,6 +166,333 @@ class InMemoryOperationalTwinRepository:
         self._last_action_hash = action_hash.removeprefix("sha256:")
 
 
+class PostgresOperationalTwinRepository:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        connection_factory: ConnectionFactory | None = None,
+        auto_migrate: bool = True,
+    ) -> None:
+        self.database_url = database_url
+        self._connection_factory = connection_factory
+        self._last_action_hash: str | None = None
+        if auto_migrate:
+            self.migrate()
+
+    def migrate(self) -> None:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(OPERATIONAL_TWIN_RUNS_SCHEMA_SQL)
+            connection.commit()
+
+    def save(self, run: OperationalTwinResponse) -> OperationalTwinResponse:
+        payload = dump_operational_twin_run(run)
+        action_hash = run.evidence_bundle.hash_chain.current_action_hash
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO system2_operational_twin_runs (
+                        twin_run_id, mission_id, team_id, status, mode,
+                        created_at, updated_at, action_hash, payload
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (twin_run_id) DO UPDATE SET
+                        mission_id = EXCLUDED.mission_id,
+                        team_id = EXCLUDED.team_id,
+                        status = EXCLUDED.status,
+                        mode = EXCLUDED.mode,
+                        updated_at = EXCLUDED.updated_at,
+                        action_hash = EXCLUDED.action_hash,
+                        payload = EXCLUDED.payload
+                    """,
+                    (
+                        run.twin_run_id,
+                        run.mission_id,
+                        run.team_id,
+                        run.status,
+                        run.mode,
+                        run.created_at_utc,
+                        run.updated_at_utc,
+                        action_hash,
+                        json.dumps(payload, sort_keys=True, default=str),
+                    ),
+                )
+            connection.commit()
+        self._last_action_hash = action_hash
+        return run
+
+    def get(self, twin_run_id: str) -> OperationalTwinResponse | None:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT payload FROM system2_operational_twin_runs WHERE twin_run_id = %s",
+                    (twin_run_id,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        payload = row["payload"] if isinstance(row, dict) else row[0]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return load_operational_twin_run(payload)
+
+    def last_action_hash(self) -> str:
+        if self._last_action_hash is not None:
+            return self._last_action_hash.removeprefix("sha256:")
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT action_hash, payload
+                    FROM system2_operational_twin_runs
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return "0" * 64
+        action_hash = row["action_hash"] if isinstance(row, dict) else row[0]
+        payload = row["payload"] if isinstance(row, dict) else row[1]
+        if action_hash:
+            self._last_action_hash = str(action_hash).removeprefix("sha256:")
+            return self._last_action_hash
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        loaded = load_operational_twin_run(payload)
+        self._last_action_hash = loaded.evidence_bundle.hash_chain.current_action_hash
+        return self._last_action_hash
+
+    def record_action_hash(self, action_hash: str) -> None:
+        self._last_action_hash = action_hash.removeprefix("sha256:")
+
+    def _connect(self) -> Any:
+        if self._connection_factory is not None:
+            return self._connection_factory()
+
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise RuntimeError(
+                "Postgres operational twin storage requires the 'infra' optional dependencies. "
+                "Install with: pip install -e '.[infra]'"
+            ) from exc
+
+        return psycopg.connect(self.database_url)
+
+
+def dump_operational_twin_run(run: OperationalTwinResponse) -> dict[str, Any]:
+    return run.model_dump(mode="json")
+
+
+def load_operational_twin_run(payload: dict[str, Any]) -> OperationalTwinResponse:
+    return OperationalTwinResponse.model_validate(payload)
+
+
+class TextExtractionProvider(Protocol):
+    provider: str
+
+    def extract_text(self, artifact: ArtifactInput) -> str | None:
+        ...
+
+
+@dataclass(frozen=True)
+class DisabledTextExtractionProvider:
+    provider: str = "none"
+
+    def extract_text(self, artifact: ArtifactInput) -> str | None:
+        return artifact.content
+
+
+@dataclass(frozen=True)
+class DeterministicTextExtractionProvider:
+    provider: str
+
+    def extract_text(self, artifact: ArtifactInput) -> str | None:
+        return artifact.content
+
+
+def build_text_extraction_provider(provider: str) -> TextExtractionProvider:
+    if provider in {"openai", "external"}:
+        return DeterministicTextExtractionProvider(provider=provider)
+    return DisabledTextExtractionProvider()
+
+
+@dataclass(frozen=True)
+class PerceptionAgent:
+    llm_client: JsonAgentClient | None = None
+    agent_provider: str = "deterministic"
+    max_retries: int = 1
+    stt_provider: str = "none"
+    ocr_provider: str = "none"
+
+    def run(
+        self,
+        *,
+        request: OperationalTwinRequest,
+        artifacts: Sequence[ArtifactRecord],
+        baseline_observations: Sequence[ObservationRecord],
+    ) -> tuple[list[ObservationRecord], list[AgentStageTrace]]:
+        observations, trace = _agentic_observations(
+            request=request,
+            artifacts=artifacts,
+            baseline_observations=baseline_observations,
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+            max_retries=self.max_retries,
+        )
+        validated = _validate_observation_pipeline(request, artifacts, observations)
+        if validated != list(observations):
+            trace.append(
+                _trace(
+                    stage="perception",
+                    provider="deterministic",
+                    model=MODEL_VERSIONS["operational_twin_perception"],
+                    status="completed",
+                    summary=(
+                        "Validated source-artifact links, normalized confidence, "
+                        "propagated controls, and redacted prohibited observation assertions."
+                    ),
+                    input_payload=[item.model_dump(mode="json") for item in observations],
+                    output_payload=[item.model_dump(mode="json") for item in validated],
+                )
+            )
+        return validated, trace
+
+
+@dataclass(frozen=True)
+class StateEstimatorAgent:
+    llm_client: JsonAgentClient | None = None
+    agent_provider: str = "deterministic"
+    max_retries: int = 1
+
+    def run(
+        self,
+        *,
+        request: OperationalTwinRequest,
+        observations: Sequence[ObservationRecord],
+        environment_state: EnvironmentState | None,
+        baseline_state_vector: OperationalStateVector,
+        baseline_uncertainty: StateUncertainty,
+    ) -> tuple[OperationalStateVector, StateUncertainty, list[AgentStageTrace]]:
+        return _agentic_state_estimate(
+            request=request,
+            observations=observations,
+            environment_state=environment_state,
+            baseline_state_vector=baseline_state_vector,
+            baseline_uncertainty=baseline_uncertainty,
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+            max_retries=self.max_retries,
+        )
+
+
+@dataclass(frozen=True)
+class ScenarioDirectorAgent:
+    llm_client: JsonAgentClient | None = None
+    agent_provider: str = "deterministic"
+    max_retries: int = 1
+
+    def run(
+        self,
+        *,
+        request: OperationalTwinRequest,
+        observations: Sequence[ObservationRecord],
+        state_estimate: StateEstimate,
+        evidence_bundle: EvidenceBundle,
+        baseline_options: Sequence[ScenarioOption],
+    ) -> tuple[list[ScenarioOption], list[AgentStageTrace]]:
+        options, trace = _agentic_scenario_options(
+            request=request,
+            observations=observations,
+            state_estimate=state_estimate,
+            evidence_bundle=evidence_bundle,
+            baseline_options=baseline_options,
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+            max_retries=self.max_retries,
+        )
+        governed = _apply_option_governance_checks(
+            request=request,
+            evidence_bundle=evidence_bundle,
+            state_vector=state_estimate.state_vector,
+            options=options,
+        )
+        return governed, trace
+
+
+@dataclass(frozen=True)
+class CriticAgent:
+    llm_client: JsonAgentClient | None = None
+    agent_provider: str = "deterministic"
+    max_retries: int = 1
+
+    def run(
+        self,
+        *,
+        request: OperationalTwinRequest,
+        observations: Sequence[ObservationRecord],
+        state_estimate: StateEstimate,
+        evidence_bundle: EvidenceBundle,
+        options: Sequence[ScenarioOption],
+    ) -> tuple[list[ScenarioOption], list[AgentStageTrace]]:
+        reviewed, trace = _agentic_critic_review(
+            request=request,
+            observations=observations,
+            state_estimate=state_estimate,
+            evidence_bundle=evidence_bundle,
+            options=options,
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+            max_retries=self.max_retries,
+        )
+        governed = _apply_option_governance_checks(
+            request=request,
+            evidence_bundle=evidence_bundle,
+            state_vector=state_estimate.state_vector,
+            options=reviewed,
+        )
+        return governed, trace
+
+
+@dataclass(frozen=True)
+class LessonAgent:
+    def from_decision(
+        self,
+        run: OperationalTwinResponse,
+        option: ScenarioOption,
+        decision: OperationalTwinDecision,
+    ) -> LessonLearned | None:
+        return _lesson_from_decision(run, option, decision)
+
+    def from_outcome(
+        self,
+        run: OperationalTwinResponse,
+        option: ScenarioOption,
+        outcome: OperationalTwinOutcome,
+    ) -> LessonLearned:
+        severity = "high" if outcome.safety_incident else "medium" if outcome.instructor_rating <= 3 else "low"
+        return LessonLearned(
+            lesson_id=f"lesson-{uuid4()}",
+            mission_id=run.mission_id,
+            category="operational_twin_outcome",
+            summary=f"Outcome for {option.title}: {outcome.observed_outcome_summary}",
+            root_cause=option.predicted_effect.target_state_change,
+            recommended_training_delta=(
+                "Calibrate future training options against the observed outcome and AAR notes."
+            ),
+            recommended_mission_delta=(
+                "Retain the outcome as evidence for future rehearsal and COA calibration."
+            ),
+            severity=severity,
+            status="draft",
+            evidence_bundle_id=outcome.evidence_bundle_id,
+            controls=outcome.controls,
+        )
+
+
 @dataclass
 class OperationalTwinService:
     audit_log: AuditSink = field(default_factory=AuditLog)
@@ -99,17 +501,30 @@ class OperationalTwinService:
     agent_provider: str = "deterministic"
     llm_client: JsonAgentClient | None = None
     llm_model: str = "deterministic"
+    agent_max_retries: int = 1
+    stt_provider: str = "none"
+    ocr_provider: str = "none"
+    lesson_agent: LessonAgent = field(default_factory=LessonAgent)
 
     def run(self, request: OperationalTwinRequest) -> OperationalTwinResponse:
         artifact_inputs = _artifact_inputs(request)
+        artifact_inputs = _apply_sidecar_extraction(
+            artifact_inputs,
+            stt_provider=self.stt_provider,
+            ocr_provider=self.ocr_provider,
+        )
         artifacts = [_artifact_record(item) for item in artifact_inputs]
         baseline_observations = _observation_records(request, artifacts)
-        observations, agent_trace = _agentic_observations(
+        observations, agent_trace = PerceptionAgent(
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+            max_retries=self.agent_max_retries,
+            stt_provider=self.stt_provider,
+            ocr_provider=self.ocr_provider,
+        ).run(
             request=request,
             artifacts=artifacts,
             baseline_observations=baseline_observations,
-            llm_client=self.llm_client,
-            agent_provider=self.agent_provider,
         )
         if not observations:
             raise ValueError("operational twin runs require at least one artifact or observation")
@@ -119,14 +534,16 @@ class OperationalTwinService:
         environment_state = _environment_state(request)
         baseline_state_vector = _estimate_state_vector(observations, environment_state)
         baseline_uncertainty = _estimate_uncertainty(observations, baseline_state_vector)
-        state_vector, uncertainty, state_trace = _agentic_state_estimate(
+        state_vector, uncertainty, state_trace = StateEstimatorAgent(
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+            max_retries=self.agent_max_retries,
+        ).run(
             request=request,
             observations=observations,
             environment_state=environment_state,
             baseline_state_vector=baseline_state_vector,
             baseline_uncertainty=baseline_uncertainty,
-            llm_client=self.llm_client,
-            agent_provider=self.agent_provider,
         )
         agent_trace.extend(state_trace)
         state_estimate = StateEstimate(
@@ -155,26 +572,40 @@ class OperationalTwinService:
             state_estimate=state_estimate,
             evidence_bundle=evidence_bundle,
         )
-        scenario_options, scenario_trace = _agentic_scenario_options(
+        scenario_options, scenario_trace = ScenarioDirectorAgent(
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+            max_retries=self.agent_max_retries,
+        ).run(
             request=request,
             observations=observations,
             state_estimate=state_estimate,
             evidence_bundle=evidence_bundle,
             baseline_options=baseline_options,
-            llm_client=self.llm_client,
-            agent_provider=self.agent_provider,
         )
         agent_trace.extend(scenario_trace)
-        scenario_options, critic_trace = _agentic_critic_review(
+        scenario_options, critic_trace = CriticAgent(
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+            max_retries=self.agent_max_retries,
+        ).run(
             request=request,
             observations=observations,
             state_estimate=state_estimate,
             evidence_bundle=evidence_bundle,
             options=scenario_options,
-            llm_client=self.llm_client,
-            agent_provider=self.agent_provider,
         )
         agent_trace.extend(critic_trace)
+        scenario_options = [
+            _with_option_decision_quality(request, evidence_bundle, state_estimate, item)
+            for item in scenario_options
+        ]
+        decision_quality, utility_estimate, reliance_guidance = assess_operational_twin_run(
+            request,
+            evidence_bundle,
+            state_estimate,
+            scenario_options,
+        )
         now = datetime.now(UTC)
         response = OperationalTwinResponse(
             twin_run_id=twin_run_id,
@@ -188,6 +619,9 @@ class OperationalTwinService:
             evidence_bundle=evidence_bundle,
             scenario_options=scenario_options,
             agent_trace=agent_trace,
+            decision_quality=decision_quality,
+            utility_estimate=utility_estimate,
+            reliance_guidance=reliance_guidance,
             created_at_utc=now,
             updated_at_utc=now,
         )
@@ -248,7 +682,7 @@ class OperationalTwinService:
             comment=request.comment,
             evidence_bundle_id=option.evidence_bundle_id,
         )
-        lesson = _lesson_from_decision(run, option, decision)
+        lesson = self.lesson_agent.from_decision(run, option, decision)
         updated_options = [
             item.model_copy(update={"status": status})
             if item.scenario_option_id == option.scenario_option_id
@@ -290,6 +724,97 @@ class OperationalTwinService:
         )
         return response
 
+    def record_outcome(
+        self,
+        twin_run_id: str,
+        request: OperationalTwinOutcomeRequest,
+    ) -> OperationalTwinOutcomeResponse | None:
+        run = self.repository.get(twin_run_id)
+        if run is None:
+            return None
+
+        option = next(
+            (
+                item
+                for item in run.scenario_options
+                if item.scenario_option_id == request.selected_option_id
+            ),
+            None,
+        )
+        if option is None:
+            raise ValueError("scenario option not found")
+        if option.status != "approved":
+            raise ValueError("outcomes can only be captured for approved options")
+
+        outcome = OperationalTwinOutcome(
+            outcome_id=f"outcome-{uuid4()}",
+            selected_option_id=option.scenario_option_id,
+            observed_outcome_summary=request.observed_outcome_summary,
+            instructor_rating=request.instructor_rating,
+            safety_incident=request.safety_incident,
+            targeted_state_improvement_estimate=request.targeted_state_improvement_estimate,
+            aar_notes=request.aar_notes,
+            actor_id=request.actor_id,
+            evidence_bundle_id=option.evidence_bundle_id,
+            controls=option.controls,
+        )
+        lesson = self.lesson_agent.from_outcome(run, option, outcome)
+        updated_run = run.model_copy(
+            update={
+                "status": "outcome_recorded",
+                "outcomes": [*run.outcomes, outcome],
+                "lessons_learned": [*run.lessons_learned, lesson],
+                "updated_at_utc": datetime.now(UTC),
+            }
+        )
+        self.repository.save(updated_run)
+        response = OperationalTwinOutcomeResponse(
+            twin_run_id=twin_run_id,
+            selected_option_id=option.scenario_option_id,
+            status="outcome_recorded",
+            outcome=outcome,
+            lesson_learned=lesson,
+            recorded_at_utc=outcome.recorded_at_utc,
+        )
+        self.audit_log.append(
+            "operational_twin_outcome_recorded",
+            {
+                "twin_run_id": twin_run_id,
+                "mission_id": run.mission_id,
+                "selected_option_id": option.scenario_option_id,
+                "outcome_id": outcome.outcome_id,
+                "lesson_id": lesson.lesson_id,
+                "actor_id": request.actor_id,
+                "instructor_rating": request.instructor_rating,
+                "safety_incident": request.safety_incident,
+            },
+        )
+        self.shared_data_sink.append_update_event(
+            build_operational_twin_outcome_update_event(updated_run, request, response)
+        )
+        return response
+
+
+def _with_option_decision_quality(
+    request: OperationalTwinRequest,
+    evidence_bundle: EvidenceBundle,
+    state_estimate: StateEstimate,
+    option: ScenarioOption,
+) -> ScenarioOption:
+    decision_quality, utility_estimate, reliance_guidance = assess_scenario_option(
+        request,
+        evidence_bundle,
+        state_estimate,
+        option,
+    )
+    return option.model_copy(
+        update={
+            "decision_quality": decision_quality,
+            "utility_estimate": utility_estimate,
+            "reliance_guidance": reliance_guidance,
+        }
+    )
+
 
 def _agentic_observations(
     *,
@@ -298,72 +823,77 @@ def _agentic_observations(
     baseline_observations: Sequence[ObservationRecord],
     llm_client: JsonAgentClient | None,
     agent_provider: str,
+    max_retries: int = 1,
 ) -> tuple[list[ObservationRecord], list[AgentStageTrace]]:
+    input_payload = {
+        "mission_id": request.mission_id,
+        "team_id": request.team_id,
+        "mode": request.mode,
+        "artifacts": [item.model_dump(mode="json") for item in artifacts],
+        "baseline_observations": [
+            item.model_dump(mode="json") for item in baseline_observations
+        ],
+    }
     if not _llm_enabled(llm_client, agent_provider):
-        return list(baseline_observations), [
+        deterministic = list(baseline_observations)
+        return deterministic, [
             _trace(
                 stage="perception",
                 provider="deterministic",
                 model=MODEL_VERSIONS["operational_twin_perception"],
                 status="completed",
                 summary="Normalized artifacts and explicit observations with deterministic perception.",
+                input_payload=input_payload,
+                output_payload=[item.model_dump(mode="json") for item in deterministic],
             )
         ]
 
     started_at = datetime.now(UTC)
-    try:
-        payload = llm_client.complete_json(
-            stage="perception",
-            system=_perception_system_prompt(),
-            user=json.dumps(
-                {
-                    "mission_id": request.mission_id,
-                    "team_id": request.team_id,
-                    "mode": request.mode,
-                    "artifacts": [item.model_dump(mode="json") for item in artifacts],
-                    "baseline_observations": [
-                        item.model_dump(mode="json") for item in baseline_observations
-                    ],
-                },
-                sort_keys=True,
-                default=str,
-            ),
-        )
-        generated = _observations_from_agent_payload(request, artifacts, payload)
-        observations = _dedupe_observations([*baseline_observations, *generated])
-        if not generated:
+    last_error: Exception | None = None
+    user_payload = json.dumps(input_payload, sort_keys=True, default=str)
+    for _attempt in range(max_retries + 1):
+        try:
+            payload = llm_client.complete_json(
+                stage="perception",
+                system=_perception_system_prompt(),
+                user=user_payload,
+            )
+            if not isinstance(payload.get("observations"), list):
+                raise ValueError("perception response must include an observations array")
+            generated = _observations_from_agent_payload(request, artifacts, payload)
+            observations = _dedupe_observations([*baseline_observations, *generated])
+            if not generated:
+                raise ValueError("perception response returned no usable source-linked observations")
             return observations, [
                 _trace(
                     stage="perception",
                     provider=llm_client.provider,
                     model=llm_client.model,
-                    status="fallback",
-                    summary="OpenAI perception returned no usable observations; deterministic observations retained.",
+                    status="completed",
+                    summary=f"OpenAI perception added {len(generated)} source-linked observations.",
                     started_at=started_at,
+                    input_payload=input_payload,
+                    output_payload=[item.model_dump(mode="json") for item in observations],
                 )
             ]
-        return observations, [
-            _trace(
-                stage="perception",
-                provider=llm_client.provider,
-                model=llm_client.model,
-                status="completed",
-                summary=f"OpenAI perception added {len(generated)} source-linked observations.",
-                started_at=started_at,
-            )
-        ]
-    except Exception as exc:
-        return list(baseline_observations), [
-            _trace(
-                stage="perception",
-                provider=_provider_name(llm_client, agent_provider),
-                model=_model_name(llm_client),
-                status="fallback",
-                summary="Agentic perception failed; deterministic observations retained.",
-                error=str(exc),
-                started_at=started_at,
-            )
-        ]
+        except Exception as exc:
+            last_error = exc
+
+    deterministic = list(baseline_observations)
+    return deterministic, [
+        _trace(
+            stage="perception",
+            provider=_provider_name(llm_client, agent_provider),
+            model=_model_name(llm_client),
+            status="fallback",
+            summary="Agentic perception failed; deterministic observations retained.",
+            error=str(last_error) if last_error is not None else None,
+            fallback_reason=str(last_error) if last_error is not None else "unknown",
+            started_at=started_at,
+            input_payload=input_payload,
+            output_payload=[item.model_dump(mode="json") for item in deterministic],
+        )
+    ]
 
 
 def _agentic_state_estimate(
@@ -375,7 +905,21 @@ def _agentic_state_estimate(
     baseline_uncertainty: StateUncertainty,
     llm_client: JsonAgentClient | None,
     agent_provider: str,
+    max_retries: int = 1,
 ) -> tuple[OperationalStateVector, StateUncertainty, list[AgentStageTrace]]:
+    input_payload = {
+        "mission_id": request.mission_id,
+        "team_id": request.team_id,
+        "mode": request.mode,
+        "environment_state": (
+            environment_state.model_dump(mode="json")
+            if environment_state is not None
+            else None
+        ),
+        "observations": [item.model_dump(mode="json") for item in observations],
+        "baseline_state_vector": baseline_state_vector.model_dump(mode="json"),
+        "baseline_uncertainty": baseline_uncertainty.model_dump(mode="json"),
+    }
     if not _llm_enabled(llm_client, agent_provider):
         return baseline_state_vector, baseline_uncertainty, [
             _trace(
@@ -384,56 +928,63 @@ def _agentic_state_estimate(
                 model=MODEL_VERSIONS["operational_twin_state_estimator"],
                 status="completed",
                 summary="Estimated latent state with deterministic evidence scoring.",
+                input_payload=input_payload,
+                output_payload={
+                    "state_vector": baseline_state_vector.model_dump(mode="json"),
+                    "uncertainty": baseline_uncertainty.model_dump(mode="json"),
+                },
             )
         ]
 
     started_at = datetime.now(UTC)
-    try:
-        payload = llm_client.complete_json(
+    last_error: Exception | None = None
+    user_payload = json.dumps(input_payload, sort_keys=True, default=str)
+    for _attempt in range(max_retries + 1):
+        try:
+            payload = llm_client.complete_json(
+                stage="state",
+                system=_state_system_prompt(),
+                user=user_payload,
+            )
+            if not isinstance(payload.get("state_vector", payload), dict):
+                raise ValueError("state response must include a state vector object")
+            vector = _state_vector_from_agent_payload(payload, baseline_state_vector)
+            uncertainty = _uncertainty_from_agent_payload(payload, baseline_uncertainty)
+            return vector, uncertainty, [
+                _trace(
+                    stage="state",
+                    provider=llm_client.provider,
+                    model=llm_client.model,
+                    status="completed",
+                    summary="OpenAI state estimator produced the provisional latent state vector.",
+                    started_at=started_at,
+                    input_payload=input_payload,
+                    output_payload={
+                        "state_vector": vector.model_dump(mode="json"),
+                        "uncertainty": uncertainty.model_dump(mode="json"),
+                    },
+                )
+            ]
+        except Exception as exc:
+            last_error = exc
+
+    return baseline_state_vector, baseline_uncertainty, [
+        _trace(
             stage="state",
-            system=_state_system_prompt(),
-            user=json.dumps(
-                {
-                    "mission_id": request.mission_id,
-                    "team_id": request.team_id,
-                    "mode": request.mode,
-                    "environment_state": (
-                        environment_state.model_dump(mode="json")
-                        if environment_state is not None
-                        else None
-                    ),
-                    "observations": [item.model_dump(mode="json") for item in observations],
-                    "baseline_state_vector": baseline_state_vector.model_dump(mode="json"),
-                    "baseline_uncertainty": baseline_uncertainty.model_dump(mode="json"),
-                },
-                sort_keys=True,
-                default=str,
-            ),
+            provider=_provider_name(llm_client, agent_provider),
+            model=_model_name(llm_client),
+            status="fallback",
+            summary="Agentic state estimation failed; deterministic state retained.",
+            error=str(last_error) if last_error is not None else None,
+            fallback_reason=str(last_error) if last_error is not None else "unknown",
+            started_at=started_at,
+            input_payload=input_payload,
+            output_payload={
+                "state_vector": baseline_state_vector.model_dump(mode="json"),
+                "uncertainty": baseline_uncertainty.model_dump(mode="json"),
+            },
         )
-        vector = _state_vector_from_agent_payload(payload, baseline_state_vector)
-        uncertainty = _uncertainty_from_agent_payload(payload, baseline_uncertainty)
-        return vector, uncertainty, [
-            _trace(
-                stage="state",
-                provider=llm_client.provider,
-                model=llm_client.model,
-                status="completed",
-                summary="OpenAI state estimator produced the provisional latent state vector.",
-                started_at=started_at,
-            )
-        ]
-    except Exception as exc:
-        return baseline_state_vector, baseline_uncertainty, [
-            _trace(
-                stage="state",
-                provider=_provider_name(llm_client, agent_provider),
-                model=_model_name(llm_client),
-                status="fallback",
-                summary="Agentic state estimation failed; deterministic state retained.",
-                error=str(exc),
-                started_at=started_at,
-            )
-        ]
+    ]
 
 
 def _agentic_scenario_options(
@@ -445,7 +996,18 @@ def _agentic_scenario_options(
     baseline_options: Sequence[ScenarioOption],
     llm_client: JsonAgentClient | None,
     agent_provider: str,
+    max_retries: int = 1,
 ) -> tuple[list[ScenarioOption], list[AgentStageTrace]]:
+    input_payload = {
+        "mission_id": request.mission_id,
+        "team_id": request.team_id,
+        "mode": request.mode,
+        "training_objective": request.training_objective,
+        "state_estimate": state_estimate.model_dump(mode="json"),
+        "evidence_bundle": evidence_bundle.model_dump(mode="json"),
+        "observations": [item.model_dump(mode="json") for item in observations],
+        "baseline_options": [item.model_dump(mode="json") for item in baseline_options],
+    }
     if not _llm_enabled(llm_client, agent_provider):
         return list(baseline_options), [
             _trace(
@@ -454,59 +1016,59 @@ def _agentic_scenario_options(
                 model=MODEL_VERSIONS["operational_twin_scenario_director"],
                 status="completed",
                 summary="Drafted scenario options with deterministic templates.",
+                input_payload=input_payload,
+                output_payload=[item.model_dump(mode="json") for item in baseline_options],
             )
         ]
 
     started_at = datetime.now(UTC)
-    try:
-        payload = llm_client.complete_json(
+    last_error: Exception | None = None
+    user_payload = json.dumps(input_payload, sort_keys=True, default=str)
+    for _attempt in range(max_retries + 1):
+        try:
+            payload = llm_client.complete_json(
+                stage="scenario",
+                system=_scenario_system_prompt(),
+                user=user_payload,
+            )
+            options = _options_from_agent_payload(
+                request=request,
+                evidence_bundle=evidence_bundle,
+                state_estimate=state_estimate,
+                payload=payload,
+            )
+            if len(options) != 3:
+                raise ValueError("scenario director must return exactly three options")
+            return options, [
+                _trace(
+                    stage="scenario",
+                    provider=llm_client.provider,
+                    model=llm_client.model,
+                    status="completed",
+                    summary="OpenAI scenario director drafted exactly three governed options.",
+                    started_at=started_at,
+                    input_payload=input_payload,
+                    output_payload=[item.model_dump(mode="json") for item in options],
+                )
+            ]
+        except Exception as exc:
+            last_error = exc
+
+    deterministic = list(baseline_options)
+    return deterministic, [
+        _trace(
             stage="scenario",
-            system=_scenario_system_prompt(),
-            user=json.dumps(
-                {
-                    "mission_id": request.mission_id,
-                    "team_id": request.team_id,
-                    "mode": request.mode,
-                    "training_objective": request.training_objective,
-                    "state_estimate": state_estimate.model_dump(mode="json"),
-                    "evidence_bundle": evidence_bundle.model_dump(mode="json"),
-                    "observations": [item.model_dump(mode="json") for item in observations],
-                    "baseline_options": [item.model_dump(mode="json") for item in baseline_options],
-                },
-                sort_keys=True,
-                default=str,
-            ),
+            provider=_provider_name(llm_client, agent_provider),
+            model=_model_name(llm_client),
+            status="fallback",
+            summary="Agentic scenario direction failed; deterministic options retained.",
+            error=str(last_error) if last_error is not None else None,
+            fallback_reason=str(last_error) if last_error is not None else "unknown",
+            started_at=started_at,
+            input_payload=input_payload,
+            output_payload=[item.model_dump(mode="json") for item in deterministic],
         )
-        options = _options_from_agent_payload(
-            request=request,
-            evidence_bundle=evidence_bundle,
-            state_estimate=state_estimate,
-            payload=payload,
-        )
-        if len(options) != 3:
-            raise ValueError("scenario director must return exactly three options")
-        return options, [
-            _trace(
-                stage="scenario",
-                provider=llm_client.provider,
-                model=llm_client.model,
-                status="completed",
-                summary="OpenAI scenario director drafted exactly three governed options.",
-                started_at=started_at,
-            )
-        ]
-    except Exception as exc:
-        return list(baseline_options), [
-            _trace(
-                stage="scenario",
-                provider=_provider_name(llm_client, agent_provider),
-                model=_model_name(llm_client),
-                status="fallback",
-                summary="Agentic scenario direction failed; deterministic options retained.",
-                error=str(exc),
-                started_at=started_at,
-            )
-        ]
+    ]
 
 
 def _agentic_critic_review(
@@ -518,7 +1080,17 @@ def _agentic_critic_review(
     options: Sequence[ScenarioOption],
     llm_client: JsonAgentClient | None,
     agent_provider: str,
+    max_retries: int = 1,
 ) -> tuple[list[ScenarioOption], list[AgentStageTrace]]:
+    input_payload = {
+        "mission_id": request.mission_id,
+        "team_id": request.team_id,
+        "mode": request.mode,
+        "state_estimate": state_estimate.model_dump(mode="json"),
+        "evidence_bundle": evidence_bundle.model_dump(mode="json"),
+        "observations": [item.model_dump(mode="json") for item in observations],
+        "options": [item.model_dump(mode="json") for item in options],
+    }
     if not _llm_enabled(llm_client, agent_provider):
         return list(options), [
             _trace(
@@ -527,55 +1099,58 @@ def _agentic_critic_review(
                 model=MODEL_VERSIONS["operational_twin_critic"],
                 status="completed",
                 summary="Applied deterministic safety, evidence, and confidence critic checks.",
+                input_payload=input_payload,
+                output_payload=[item.model_dump(mode="json") for item in options],
             )
         ]
 
     started_at = datetime.now(UTC)
-    try:
-        payload = llm_client.complete_json(
+    last_error: Exception | None = None
+    user_payload = json.dumps(input_payload, sort_keys=True, default=str)
+    for _attempt in range(max_retries + 1):
+        try:
+            payload = llm_client.complete_json(
+                stage="critic",
+                system=_critic_system_prompt(),
+                user=user_payload,
+            )
+            if not isinstance(payload.get("reviews"), list):
+                raise ValueError("critic response must include a reviews array")
+            reviewed = _apply_agent_critic_reviews(options, payload)
+            return reviewed, [
+                _trace(
+                    stage="critic",
+                    provider=llm_client.provider,
+                    model=llm_client.model,
+                    status="completed",
+                    summary="OpenAI critic reviewed grounding, risk, option diversity, and human-approval gates.",
+                    started_at=started_at,
+                    input_payload=input_payload,
+                    output_payload=[item.model_dump(mode="json") for item in reviewed],
+                )
+            ]
+        except Exception as exc:
+            last_error = exc
+
+    deterministic = list(options)
+    return deterministic, [
+        _trace(
             stage="critic",
-            system=_critic_system_prompt(),
-            user=json.dumps(
-                {
-                    "mission_id": request.mission_id,
-                    "team_id": request.team_id,
-                    "mode": request.mode,
-                    "state_estimate": state_estimate.model_dump(mode="json"),
-                    "evidence_bundle": evidence_bundle.model_dump(mode="json"),
-                    "observations": [item.model_dump(mode="json") for item in observations],
-                    "options": [item.model_dump(mode="json") for item in options],
-                },
-                sort_keys=True,
-                default=str,
-            ),
+            provider=_provider_name(llm_client, agent_provider),
+            model=_model_name(llm_client),
+            status="fallback",
+            summary="Agentic critic failed; deterministic critic statuses retained.",
+            error=str(last_error) if last_error is not None else None,
+            fallback_reason=str(last_error) if last_error is not None else "unknown",
+            started_at=started_at,
+            input_payload=input_payload,
+            output_payload=[item.model_dump(mode="json") for item in deterministic],
         )
-        reviewed = _apply_agent_critic_reviews(options, payload)
-        return reviewed, [
-            _trace(
-                stage="critic",
-                provider=llm_client.provider,
-                model=llm_client.model,
-                status="completed",
-                summary="OpenAI critic reviewed grounding, risk, option diversity, and human-approval gates.",
-                started_at=started_at,
-            )
-        ]
-    except Exception as exc:
-        return list(options), [
-            _trace(
-                stage="critic",
-                provider=_provider_name(llm_client, agent_provider),
-                model=_model_name(llm_client),
-                status="fallback",
-                summary="Agentic critic failed; deterministic critic statuses retained.",
-                error=str(exc),
-                started_at=started_at,
-            )
-        ]
+    ]
 
 
 def _artifact_inputs(request: OperationalTwinRequest) -> list[ArtifactInput]:
-    inputs = list(request.artifacts)
+    inputs = [_propagate_artifact_controls(request, item) for item in request.artifacts]
     if request.environment:
         inputs.append(
             ArtifactInput(
@@ -597,6 +1172,43 @@ def _artifact_inputs(request: OperationalTwinRequest) -> list[ArtifactInput]:
             )
         )
     return inputs
+
+
+def _apply_sidecar_extraction(
+    artifacts: Sequence[ArtifactInput],
+    *,
+    stt_provider: str,
+    ocr_provider: str,
+) -> list[ArtifactInput]:
+    stt = build_text_extraction_provider(stt_provider)
+    ocr = build_text_extraction_provider(ocr_provider)
+    updated: list[ArtifactInput] = []
+    for artifact in artifacts:
+        provider: TextExtractionProvider | None = None
+        if artifact.kind in {"audio"}:
+            provider = stt
+        elif artifact.kind in {"document_image", "photo"}:
+            provider = ocr
+        if provider is None or artifact.content:
+            updated.append(artifact)
+            continue
+        extracted = provider.extract_text(artifact)
+        if not extracted:
+            updated.append(artifact)
+            continue
+        metadata = dict(artifact.metadata)
+        metadata["sidecar_extraction_provider"] = provider.provider
+        updated.append(artifact.model_copy(update={"content": extracted, "metadata": metadata}))
+    return updated
+
+
+def _propagate_artifact_controls(
+    request: OperationalTwinRequest,
+    artifact: ArtifactInput,
+) -> ArtifactInput:
+    if artifact.controls == ControlProperties() and request.controls != ControlProperties():
+        return artifact.model_copy(update={"controls": request.controls})
+    return artifact
 
 
 def _artifact_record(artifact: ArtifactInput) -> ArtifactRecord:
@@ -624,7 +1236,45 @@ def _observation_records(
         for item in request.observations
     ]
     records.extend(_observations_from_artifacts(request, artifacts))
-    return _dedupe_observations(records)
+    return _validate_observation_pipeline(request, artifacts, _dedupe_observations(records))
+
+
+def _validate_observation_pipeline(
+    request: OperationalTwinRequest,
+    artifacts: Sequence[ArtifactRecord],
+    observations: Sequence[ObservationRecord],
+) -> list[ObservationRecord]:
+    artifact_ids = {item.artifact_id for item in artifacts}
+    artifact_controls = {item.artifact_id: item.controls for item in artifacts}
+    default_artifact_id = artifacts[0].artifact_id if artifacts else None
+    validated: list[ObservationRecord] = []
+    for observation in observations:
+        source_ids = [source_id for source_id in observation.source_artifact_ids if source_id in artifact_ids]
+        if not source_ids and default_artifact_id is not None:
+            source_ids = [default_artifact_id]
+        if not source_ids:
+            continue
+        confidence = round(_clamp(observation.confidence, low=0.0, high=1.0), 3)
+        controls = observation.controls
+        if controls == ControlProperties() and source_ids[0] in artifact_controls:
+            controls = artifact_controls[source_ids[0]]
+        content, confidence = _sanitize_observation_content(observation.content, confidence)
+        subject_ref = observation.subject_ref or TwinSubjectRef(
+            subject_type="team",
+            subject_id=request.team_id,
+        )
+        validated.append(
+            observation.model_copy(
+                update={
+                    "subject_ref": subject_ref,
+                    "source_artifact_ids": source_ids,
+                    "confidence": confidence,
+                    "controls": controls,
+                    "content": content,
+                }
+            )
+        )
+    return _dedupe_observations(validated)
 
 
 def _observation_record_from_input(
@@ -668,8 +1318,14 @@ def _observations_from_artifacts(
             subject_type="environment" if artifact.kind == "weather" else "team",
             subject_id="environment" if artifact.kind == "weather" else request.team_id,
         )
+        summary = text or _summary_text(artifact.metadata)
+        if artifact.kind in {"ocr_text", "document_image"} and _contains_prompt_injection(summary):
+            summary = (
+                "Untrusted OCR/document text contained instruction-like content; "
+                "retained only as evidence metadata and ignored as instructions."
+            )
         content: dict[str, Any] = {
-            "summary": text or _summary_text(artifact.metadata),
+            "summary": summary,
             "source_kind": artifact.kind,
         }
         content.update(artifact.metadata)
@@ -707,6 +1363,37 @@ def _raw_artifact_match(
             metadata=request.environment,
         )
     return None
+
+
+def _sanitize_observation_content(
+    content: dict[str, Any],
+    confidence: float,
+) -> tuple[dict[str, Any], float]:
+    text = _summary_text(content).lower()
+    if any(term in text for term in _PROHIBITED_OBSERVATION_TERMS):
+        sanitized = {
+            "summary": (
+                "Source text included a prohibited inference; retained only as "
+                "non-inferential evidence metadata."
+            ),
+            "redacted_prohibited_assertion": True,
+        }
+        return sanitized, round(min(confidence, 0.35), 3)
+    if _contains_prompt_injection(text):
+        sanitized = dict(content)
+        sanitized["summary"] = (
+            "Source text contained instruction-like content; treated as untrusted evidence "
+            "and ignored as operational instructions."
+        )
+        sanitized["untrusted_prompt_like_text"] = True
+        sanitized.pop("text", None)
+        return sanitized, round(min(confidence, 0.60), 3)
+    return content, confidence
+
+
+def _contains_prompt_injection(text: str) -> bool:
+    lowered = text.lower()
+    return any(term in lowered for term in _PROMPT_INJECTION_TERMS)
 
 
 def _environment_state(request: OperationalTwinRequest) -> EnvironmentState | None:
@@ -851,15 +1538,30 @@ def _policy_checks(
     state_vector: OperationalStateVector,
 ) -> EvidenceBundlePolicyChecks:
     classification_ok = _classification_ok(request, observations)
+    control_marking_ok = _controls_ok(request, observations)
+    stale_source_ok = _sources_fresh(observations)
     evidence_threshold_ok = len(observations) >= 2
-    safety_ok = not (
+    fatigue_overload_ok = not (
         state_vector.fatigue_burden > 0.88 and state_vector.mission_tempo_risk > 0.72
+    )
+    safety_ok = fatigue_overload_ok
+    governance_findings = _policy_findings(
+        classification_ok=classification_ok,
+        control_marking_ok=control_marking_ok,
+        stale_source_ok=stale_source_ok,
+        evidence_threshold_ok=evidence_threshold_ok,
+        fatigue_overload_ok=fatigue_overload_ok,
+        human_approval_required=request.require_human_approval,
     )
     return EvidenceBundlePolicyChecks(
         classification_ok=classification_ok,
         evidence_threshold_ok=evidence_threshold_ok,
         safety_ok=safety_ok,
         human_approval_required=request.require_human_approval,
+        stale_source_ok=stale_source_ok,
+        control_marking_ok=control_marking_ok,
+        fatigue_overload_ok=fatigue_overload_ok,
+        governance_findings=governance_findings,
     )
 
 
@@ -957,7 +1659,13 @@ def _scenario_options(
     evidence_bundle: EvidenceBundle,
 ) -> list[ScenarioOption]:
     target = _target_dimension(observations, state_estimate.state_vector)
-    templates = _option_templates(target, request.mode)
+    templates = list(_option_templates(target, request.mode))
+    if (
+        not evidence_bundle.policy_checks.evidence_threshold_ok
+        or state_estimate.uncertainty.overall > 0.65
+        or not evidence_bundle.policy_checks.stale_source_ok
+    ):
+        templates[0] = _hold_option_template(request.mode)
     options: list[ScenarioOption] = []
     for index, template in enumerate(templates):
         risk = _option_risk(index, state_estimate.state_vector)
@@ -1215,6 +1923,105 @@ def _apply_agent_critic_reviews(
     return updated
 
 
+def _apply_option_governance_checks(
+    *,
+    request: OperationalTwinRequest,
+    evidence_bundle: EvidenceBundle,
+    state_vector: OperationalStateVector,
+    options: Sequence[ScenarioOption],
+) -> list[ScenarioOption]:
+    updated: list[ScenarioOption] = []
+    duplicate_indexes = _duplicate_option_indexes(options)
+    for index, option in enumerate(options[:3]):
+        deterministic_status, deterministic_reasons = _critic_status(
+            evidence_bundle=evidence_bundle,
+            risk_score=option.risk_score,
+            confidence=option.confidence,
+            state_vector=state_vector,
+        )
+        status = _more_restrictive_status(option.critic_status, deterministic_status)
+        reasons = _dedupe_reasons([*option.critic_reasons, *deterministic_reasons])
+        if index in duplicate_indexes:
+            status = _more_restrictive_status(status, "escalate")
+            reasons = _dedupe_reasons([*reasons, "Duplicate option detection requires review."])
+        if option.evidence_bundle_id != evidence_bundle.bundle_id:
+            status = _more_restrictive_status(status, "reject")
+            reasons = _dedupe_reasons([*reasons, "Option does not cite the current evidence bundle."])
+        if request.require_human_approval and option.status != "draft":
+            status = _more_restrictive_status(status, "reject")
+            reasons = _dedupe_reasons([*reasons, "Generated options must remain draft until human decision."])
+        updated.append(
+            option.model_copy(
+                update={
+                    "critic_status": status,
+                    "critic_reasons": reasons,
+                    "evidence_bundle_id": evidence_bundle.bundle_id,
+                    "status": "draft",
+                    "controls": request.controls,
+                }
+            )
+        )
+    if len(updated) != 3:
+        raise ValueError("operational twin scenario generation must preserve exactly three options")
+    return updated
+
+
+def _duplicate_option_indexes(options: Sequence[ScenarioOption]) -> set[int]:
+    duplicate_indexes: set[int] = set()
+    for left_index, left in enumerate(options):
+        for right_index, right in enumerate(options[left_index + 1 :], start=left_index + 1):
+            if (
+                _text_similarity(left.title, right.title) > 0.82
+                or _text_similarity(left.narrative, right.narrative) > 0.72
+            ):
+                duplicate_indexes.add(left_index)
+                duplicate_indexes.add(right_index)
+    return duplicate_indexes
+
+
+def _text_similarity(left: str, right: str) -> float:
+    left_terms = _significant_terms(left)
+    right_terms = _significant_terms(right)
+    if not left_terms or not right_terms:
+        return 0.0
+    return len(left_terms & right_terms) / len(left_terms | right_terms)
+
+
+def _significant_terms(value: str) -> set[str]:
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "for",
+        "in",
+        "of",
+        "or",
+        "the",
+        "to",
+        "with",
+        "option",
+        "primary",
+        "alternate",
+        "safer",
+        "fallback",
+    }
+    return {
+        token.strip(".,:;!?()[]{}").lower()
+        for token in value.split()
+        if len(token.strip(".,:;!?()[]{}")) > 2
+        and token.strip(".,:;!?()[]{}").lower() not in stopwords
+    }
+
+
+def _dedupe_reasons(reasons: Sequence[str]) -> list[str]:
+    deduped: dict[str, str] = {}
+    for reason in reasons:
+        stripped = str(reason).strip()
+        if stripped:
+            deduped[stripped.lower()] = stripped
+    return list(deduped.values())
+
+
 def _trace(
     *,
     stage: str,
@@ -1223,8 +2030,13 @@ def _trace(
     status: str,
     summary: str,
     error: str | None = None,
+    fallback_reason: str | None = None,
     started_at: datetime | None = None,
+    input_payload: Any | None = None,
+    output_payload: Any | None = None,
 ) -> AgentStageTrace:
+    resolved_started_at = started_at or datetime.now(UTC)
+    completed_at = datetime.now(UTC)
     return AgentStageTrace(
         stage=stage,
         provider=provider,
@@ -1232,8 +2044,12 @@ def _trace(
         status=status,  # type: ignore[arg-type]
         summary=summary,
         error=error,
-        started_at=started_at or datetime.now(UTC),
-        completed_at=datetime.now(UTC),
+        input_hash=canonical_hash(input_payload) if input_payload is not None else None,
+        output_hash=canonical_hash(output_payload) if output_payload is not None else None,
+        duration_ms=max(0, int((completed_at - resolved_started_at).total_seconds() * 1000)),
+        fallback_reason=fallback_reason,
+        started_at=resolved_started_at,
+        completed_at=completed_at,
     )
 
 
@@ -1376,6 +2192,21 @@ def _option_templates(target: str, mode: str) -> tuple[dict[str, str | float], .
     )
 
 
+def _hold_option_template(mode: str) -> dict[str, str | float]:
+    action = (
+        "Hold COA recommendation and collect one fresh independent source before commander review."
+        if mode == "mission"
+        else "Hold scenario pressure and collect one fresh independent observation before the next inject."
+    )
+    return {
+        "title": "Hold option: collect more evidence",
+        "narrative": action,
+        "target_state_change": "Improve evidence confidence before selecting a consequential option.",
+        "learning": 0.42,
+        "mission_benefit": 0.38,
+    }
+
+
 def _critic_status(
     *,
     evidence_bundle: EvidenceBundle,
@@ -1384,7 +2215,10 @@ def _critic_status(
     state_vector: OperationalStateVector,
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
-    if not evidence_bundle.policy_checks.classification_ok:
+    if (
+        not evidence_bundle.policy_checks.classification_ok
+        or not evidence_bundle.policy_checks.control_marking_ok
+    ):
         reasons.append("Classification or control marking check failed.")
         return "reject", reasons
     if not evidence_bundle.policy_checks.safety_ok:
@@ -1392,9 +2226,15 @@ def _critic_status(
         return "reject", reasons
 
     status = "pass"
+    if not evidence_bundle.policy_checks.human_approval_required:
+        status = "escalate"
+        reasons.append("Missing human approval gate for a consequential option.")
     if not evidence_bundle.policy_checks.evidence_threshold_ok:
         status = "escalate"
         reasons.append("Fewer than two observations support the recommendation.")
+    if not evidence_bundle.policy_checks.stale_source_ok:
+        status = "escalate"
+        reasons.append("One or more source observations exceed the stale-source threshold.")
     if confidence < 0.64:
         status = "escalate"
         reasons.append("Option confidence is below approval-ready threshold.")
@@ -1508,6 +2348,56 @@ def _classification_ok(
     markings = [request.controls.classification_marking]
     markings.extend(item.controls.classification_marking for item in observations)
     return all(marking for marking in markings) and len(set(markings)) == 1
+
+
+def _controls_ok(
+    request: OperationalTwinRequest,
+    observations: Sequence[ObservationRecord],
+) -> bool:
+    expected = request.controls
+    return all(
+        item.controls.classification_marking == expected.classification_marking
+        and item.controls.releasability == expected.releasability
+        and item.controls.need_to_know_domain == expected.need_to_know_domain
+        and item.controls.source_handling_code == expected.source_handling_code
+        for item in observations
+    )
+
+
+def _sources_fresh(observations: Sequence[ObservationRecord]) -> bool:
+    now = datetime.now(UTC)
+    return all(now - _as_utc(item.timestamp_utc) <= _STALE_SOURCE_THRESHOLD for item in observations)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _policy_findings(
+    *,
+    classification_ok: bool,
+    control_marking_ok: bool,
+    stale_source_ok: bool,
+    evidence_threshold_ok: bool,
+    fatigue_overload_ok: bool,
+    human_approval_required: bool,
+) -> list[str]:
+    findings: list[str] = []
+    if not classification_ok:
+        findings.append("classification mismatch")
+    if not control_marking_ok:
+        findings.append("marking/control mismatch")
+    if not stale_source_ok:
+        findings.append("stale source threshold exceeded")
+    if not evidence_threshold_ok:
+        findings.append("evidence threshold not met")
+    if not fatigue_overload_ok:
+        findings.append("fatigue overload threshold exceeded")
+    if not human_approval_required:
+        findings.append("missing human approval gate")
+    return findings
 
 
 def _observation_kind_for_artifact(kind: str) -> TwinObservationKind:

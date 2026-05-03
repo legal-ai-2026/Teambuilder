@@ -13,12 +13,14 @@ _BACKENDS = {
     "agent_state": {"memory", "redis"},
     "audit": {"file", "postgres"},
     "candidate_pool": {"local", "postgres"},
+    "operational_twin_repository": {"memory", "postgres"},
     "retrieval": {"local", "pgvector"},
     "graph": {"local", "falkordb"},
     "shared_data": {"memory", "postgres"},
 }
 
 _AGENTIC_PROVIDERS = {"auto", "deterministic", "openai"}
+_EXTRACTION_PROVIDERS = {"none", "openai", "external"}
 
 
 def _env_bool(value: str | None, *, default: bool = False) -> bool:
@@ -81,6 +83,38 @@ def _agentic_provider(value: str | None) -> str:
     return selected
 
 
+def _extraction_provider(value: str | None, *, kind: str) -> str:
+    selected = (value or "none").strip().lower()
+    if selected not in _EXTRACTION_PROVIDERS:
+        allowed_values = ", ".join(sorted(_EXTRACTION_PROVIDERS))
+        raise ValueError(f"{kind} provider must be one of: {allowed_values}")
+    return selected
+
+
+def _non_negative_int(value: str | None, *, default: int, name: str) -> int:
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if parsed < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return parsed
+
+
+def _positive_float(value: str | None, *, default: float, name: str) -> float:
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if parsed <= 0:
+        raise ValueError(f"{name} must be greater than zero")
+    return parsed
+
+
 def normalize_postgres_url(value: str | None) -> str | None:
     if not value:
         return None
@@ -117,6 +151,7 @@ class InfraSettings:
     agent_repository_backend: str
     agent_state_backend: str
     candidate_pool_backend: str
+    operational_twin_repository_backend: str
     retrieval_backend: str
     graph_backend: str
     shared_data_backend: str
@@ -124,6 +159,10 @@ class InfraSettings:
     admin_api_key: str | None
     cors_allowed_origins: tuple[str, ...]
     agentic_provider: str
+    agentic_max_retries: int
+    agentic_timeout_seconds: float
+    stt_provider: str
+    ocr_provider: str
     openai_api_key: str | None
     openai_model: str
     openai_base_url: str
@@ -171,6 +210,11 @@ class InfraSettings:
                 default="postgres" if database_url else "local",
                 kind="candidate_pool",
             ),
+            operational_twin_repository_backend=_backend(
+                source.get("OPERATIONAL_TWIN_REPOSITORY_BACKEND"),
+                default="postgres" if database_url else "memory",
+                kind="operational_twin_repository",
+            ),
             retrieval_backend=_backend(
                 source.get("RETRIEVAL_BACKEND"),
                 default="pgvector" if pgvector_url and pgvector_enabled else "local",
@@ -190,6 +234,18 @@ class InfraSettings:
             admin_api_key=admin_api_key,
             cors_allowed_origins=_csv_values(source.get("SYSTEM2_CORS_ORIGINS")),
             agentic_provider=_agentic_provider(source.get("SYSTEM2_AGENTIC_PROVIDER")),
+            agentic_max_retries=_non_negative_int(
+                source.get("SYSTEM2_AGENTIC_MAX_RETRIES"),
+                default=1,
+                name="SYSTEM2_AGENTIC_MAX_RETRIES",
+            ),
+            agentic_timeout_seconds=_positive_float(
+                source.get("SYSTEM2_AGENTIC_TIMEOUT_SECONDS"),
+                default=45.0,
+                name="SYSTEM2_AGENTIC_TIMEOUT_SECONDS",
+            ),
+            stt_provider=_extraction_provider(source.get("STT_PROVIDER"), kind="STT"),
+            ocr_provider=_extraction_provider(source.get("OCR_PROVIDER"), kind="OCR"),
             openai_api_key=openai_api_key,
             openai_model=source.get("OPENAI_MODEL", "gpt-5.4-mini"),
             openai_base_url=source.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
@@ -218,6 +274,7 @@ class InfraSettings:
                 "agent_repository": self.agent_repository_backend,
                 "agent_state": self.agent_state_backend,
                 "candidate_pool": self.candidate_pool_backend,
+                "operational_twin_repository": self.operational_twin_repository_backend,
                 "retrieval": self.retrieval_backend,
                 "graph": self.graph_backend,
                 "shared_data": self.shared_data_backend,
@@ -229,6 +286,10 @@ class InfraSettings:
             },
             "agentic_runtime": {
                 "provider": self.agentic_provider,
+                "max_retries": self.agentic_max_retries,
+                "timeout_seconds": self.agentic_timeout_seconds,
+                "stt_provider": self.stt_provider,
+                "ocr_provider": self.ocr_provider,
                 "openai_configured": self.openai_api_key is not None,
                 "openai_model": self.openai_model,
                 "openai_base_url": redact_url(self.openai_base_url),

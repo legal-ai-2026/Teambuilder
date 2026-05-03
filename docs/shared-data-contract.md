@@ -219,6 +219,7 @@ System 2 can:
 - produce a primary roster
 - produce a second-choice roster
 - explain confidence and model disagreement
+- provide decision-quality, utility, and reliance guidance for human review
 - run fairness/proxy audits
 - record agent steps and evidence
 - ingest retrieval context into pgvector
@@ -246,6 +247,7 @@ System 2 must not:
 | `POST /v1/operational-twin/runs` | Normalize multimodal evidence, estimate operational state, and draft governed options | yes |
 | `GET /v1/operational-twin/runs/{twin_run_id}` | Fetch operational twin run with evidence bundle and draft/decided options | no |
 | `POST /v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` | Record approve/reject/escalate decision and lesson draft | yes |
+| `POST /v1/operational-twin/runs/{twin_run_id}/outcome` | Capture selected-option outcome, rating, safety incident flag, and AAR notes | yes |
 | `POST /v1/score` | Direct roster scoring | audit only |
 | `POST /v1/agent-runs` | Agentic recommendation workflow | yes |
 | `GET /v1/agent-runs/{run_id}` | Fetch run and recommendation | no |
@@ -312,12 +314,13 @@ Current implemented operational twin input:
 ```
 
 Operational twin runs append `entity_update_events` with entity type
-`operational_twin`. Option decisions append `operational_twin_option` events.
-The payloads carry mission/team IDs, evidence bundle ID, state estimate ID,
-scenario option IDs, decision IDs, and lesson IDs when an approved option emits
-a lesson draft. The full run response also carries `agent_trace`, which records
-the provider, model, status, and fallback/error details for perception, state,
-scenario, and critic agent stages.
+`operational_twin`. Option decisions append `operational_twin_option` events,
+and outcome capture appends `operational_twin_outcome` events. The payloads
+carry mission/team IDs, evidence bundle ID, state estimate ID, scenario option
+IDs, decision IDs, outcome IDs, and lesson IDs when approved options or
+outcomes emit lesson drafts. The full run response also carries `agent_trace`,
+which records the provider, model, status, input/output hashes, duration, and
+fallback/error details for perception, state, scenario, and critic agent stages.
 
 Current implemented score input:
 
@@ -397,7 +400,10 @@ Direct score output:
   "second_choice_roster": [],
   "fairness_audit": {},
   "career_forecast": {},
-  "trace": {}
+  "trace": {},
+  "decision_quality": {},
+  "utility_estimate": {},
+  "reliance_guidance": {}
 }
 ```
 
@@ -424,6 +430,7 @@ Agent run output contains:
 - original request
 - ordered agent steps
 - recommendation payload
+- decision-quality, utility, and reliance guidance
 - approval payload if decided
 - error if failed
 - timestamps

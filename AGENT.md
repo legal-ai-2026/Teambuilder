@@ -38,6 +38,7 @@ contract:
 - fairness audit
 - narrative explanation
 - five-year career forecast
+- decision-quality, utility, and reliance guidance
 - append-only hash-chained audit log
 - API kill switch
 
@@ -113,7 +114,9 @@ The tests must cover:
 6. A second roster is solved after blocking primary `(soldier, role)` pairs.
 7. Fairness audits run on protected attributes that are excluded from scoring.
 8. Narrative explanations are generated from deterministic outputs.
-9. The response returns recommendations, audit, career forecast, and trace
+9. Decision-quality assessment estimates evidence sufficiency, uncertainty,
+   reversibility, value of information, utility, and reliance posture.
+10. The response returns recommendations, audit, career forecast, and trace
    metadata.
 
 Confidence policy:
@@ -136,6 +139,8 @@ Confidence policy:
 ## Operational Safety
 
 - Every recommendation carries uncertainty and model disagreement.
+- Every consequential response carries decision-quality, utility, and reliance
+  guidance. This guidance is advisory and never auto-approves action.
 - Every response carries trace metadata.
 - The kill switch must block all scoring routes.
 - Admin routes must be protected by the deployment gateway or service mesh.
@@ -152,3 +157,5 @@ Confidence policy:
 5. Logging protected attributes, full names, or clear unit/MOS identifiers.
 6. Changing the feature set without updating `assets/feature-spec.md`.
 7. Mutating rank/order in narrative code.
+8. Removing decision-quality, utility, or reliance outputs from consequential
+   recommendation responses.

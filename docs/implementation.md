@@ -121,13 +121,16 @@ The operational twin endpoint separates raw artifacts from atomic
 observations, provisional `StateEstimate`, `EvidenceBundle`, draft
 `ScenarioOption` objects, human `OperationalTwinDecision` records, and
 `LessonLearned` outputs. Scenario options always start as `draft`; approval,
-rejection, or escalation is recorded through the decision endpoint.
+rejection, or escalation is recorded through the decision endpoint. Approved
+options can receive outcome/AAR capture through the outcome endpoint, which
+adds a stored outcome, draft lesson, audit record, and shared update event.
 
 Set `SYSTEM2_AGENTIC_PROVIDER=auto` or `openai` and provide `OPENAI_API_KEY` to
 run the complete agentic path. The runtime uses OpenAI JSON responses for
 perception, state estimation, scenario direction, and critic review. If OpenAI
 is unavailable in `auto` mode, the endpoint records a fallback stage in
-`agent_trace` and keeps the deterministic output. Use
+`agent_trace` and keeps the deterministic output. Stage traces include
+input/output hashes, duration, and fallback reason. Use
 `SYSTEM2_AGENTIC_PROVIDER=deterministic` for offline validation.
 
 `ScoreRequest` accepts either:
@@ -155,6 +158,12 @@ In Postgres mode, a missing candidate pool is a request error.
 `roles` can be supplied explicitly. If omitted, `data.default_roles()` provides
 the standard 14-slot roster.
 
+`CognitiveAdaptationRequest`, `OperationalTwinRequest`, `ScoreRequest`, and
+`AgentRunRequest` also accept optional `decision_context`. If omitted, the
+service creates a lane-specific default. Responses include
+`decision_quality`, `utility_estimate`, and `reliance_guidance`; these are
+advisory review aids and never approve or execute an option.
+
 ## Module Responsibilities
 
 `api.py`
@@ -164,7 +173,8 @@ and `/health` are compatibility aliases. `/v1/adaptations` runs the cognitive
 mission adaptation loop, and `/v1/adaptations/{adaptation_id}/approval` records
 instructor approval or rejection. `/v1/operational-twin/runs` runs the
 Foundry-style operational twin loop, the matching `GET` route fetches the stored
-run, and the option decision route records approve/reject/escalate decisions.
+run, the option decision route records approve/reject/escalate decisions, and
+the outcome route captures selected-option outcome and AAR data.
 `/v1/agent-runs` starts the roster recommendation workflow,
 `/v1/agent-runs/{run_id}` fetches the stored run, and
 `/v1/agent-runs/{run_id}/approval` records approval or rejection. The context
@@ -182,7 +192,9 @@ fatigue burden, situational clarity, cohesion, leader decision quality, mission
 tempo risk, and training challenge gap, the scenario director drafts exactly
 three options, and the critic marks each option as pass, modify, escalate, or
 reject. A separate decision method records the named human decision and creates
-a lesson-learned draft when an option is approved.
+a lesson-learned draft when an option is approved. Outcome capture stores
+observed results for future evaluation/calibration without automatically
+feeding them back into model learning.
 
 `llm.py`
 
@@ -190,6 +202,15 @@ Defines the JSON agent-client protocol and an OpenAI chat-completions adapter.
 The adapter requests JSON objects and parses them before the operational twin
 service validates the result against strict Pydantic contracts. The project
 does not require the OpenAI Python SDK.
+
+`decision_quality.py`
+
+Adds deterministic decision-science review over already-computed outputs. It
+assesses framing completeness, evidence sufficiency, uncertainty,
+reversibility, value of information, expected utility, and reliance posture for
+cognitive adaptations, operational twin options, roster recommendations, and
+agent runs. It does not call models, change assignment rank, or weaken existing
+safety and fairness gates.
 
 `security.py`
 
@@ -363,6 +384,7 @@ mapping.
 - Confidence and model disagreement are mandatory response fields.
 - Fairness audit results are returned on every successful score response.
 - Recommendations include source references and input source hashes.
+- Recommendations include decision-quality, utility, and reliance guidance.
 - Audit records are hash-chained and redact protected attributes before
   persistence.
 - Agent runs write decision snapshots for drift checks when shared-data
@@ -374,6 +396,8 @@ mapping.
 - Context and graph ingestion endpoints must be protected outside this package.
 - Agent runs end in `awaiting_approval` by default and require authorized human
   approval before finalization.
+- Decision-quality guidance can recommend review, deferral, or escalation, but
+  it is never a substitute for named human accountability.
 - Redis state must not be treated as authoritative; rebuild from Postgres.
 
 ## Synthetic Data Export

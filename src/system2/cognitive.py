@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from .adaptation_store import AdaptationRepository, InMemoryAdaptationRepository
 from .audit import AuditLog, AuditSink
+from .decision_quality import assess_cognitive_adaptation, assess_scenario_inject
 from .models import (
     AgentApprovalDecision,
     CognitiveAdaptationRequest,
@@ -92,6 +93,14 @@ class CognitiveAdaptationService:
         retrieved_context = self.retriever.retrieve(_retrieval_query(state), limit=3)
         source_refs = _adaptation_source_refs(request, retrieved_context)
         recommendations, blocked = direct_scenarios(request, state)
+        recommendations = [_with_decision_quality(request, item) for item in recommendations]
+        blocked = [_with_decision_quality(request, item) for item in blocked]
+        decision_quality, utility_estimate, reliance_guidance = assess_cognitive_adaptation(
+            request,
+            state,
+            recommendations,
+            blocked,
+        )
         trace = _trace_metadata(request, state, source_refs)
         response = CognitiveAdaptationResponse(
             adaptation_id=adaptation_id,
@@ -103,6 +112,9 @@ class CognitiveAdaptationService:
             blocked_recommendations=blocked,
             trace=trace,
             approval_required=request.require_human_approval,
+            decision_quality=decision_quality,
+            utility_estimate=utility_estimate,
+            reliance_guidance=reliance_guidance,
         )
         response = self.repository.save(response)
         self.audit_log.append(
@@ -221,6 +233,23 @@ def direct_scenarios(
         else:
             allowed.append(audited)
     return allowed, blocked
+
+
+def _with_decision_quality(
+    request: CognitiveAdaptationRequest,
+    recommendation: ScenarioInjectRecommendation,
+) -> ScenarioInjectRecommendation:
+    decision_quality, utility_estimate, reliance_guidance = assess_scenario_inject(
+        request,
+        recommendation,
+    )
+    return recommendation.model_copy(
+        update={
+            "decision_quality": decision_quality,
+            "utility_estimate": utility_estimate,
+            "reliance_guidance": reliance_guidance,
+        }
+    )
 
 
 def _estimate_dimension(

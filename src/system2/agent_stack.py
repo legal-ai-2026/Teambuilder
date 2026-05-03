@@ -8,6 +8,11 @@ from .audit import AuditLog, AuditSink, PostgresAuditLog
 from .candidate_pool import CandidatePoolResolver, InMemoryCandidatePoolResolver, PostgresCandidatePoolResolver
 from .config import InfraSettings
 from .graph import FalkorDBGraphContextProvider, LocalGraphContextProvider
+from .operational_twin import (
+    InMemoryOperationalTwinRepository,
+    OperationalTwinRepository,
+    PostgresOperationalTwinRepository,
+)
 from .postgres_agent_store import PostgresAgentRunRepository
 from .retrieval import LocalContextRetriever, PgVectorContextRetriever
 from .service import SelectionService
@@ -54,6 +59,12 @@ def build_adaptation_repository(settings: InfraSettings) -> AdaptationRepository
     if settings.adaptation_repository_backend == "postgres" and settings.database_url:
         return PostgresAdaptationRepository(settings.database_url)
     return InMemoryAdaptationRepository()
+
+
+def build_operational_twin_repository(settings: InfraSettings) -> OperationalTwinRepository:
+    if settings.operational_twin_repository_backend == "postgres" and settings.database_url:
+        return PostgresOperationalTwinRepository(settings.database_url)
+    return InMemoryOperationalTwinRepository()
 
 
 def build_selection_service(settings: InfraSettings | None = None) -> SelectionService:

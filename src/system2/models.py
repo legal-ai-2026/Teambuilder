@@ -55,6 +55,94 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+DecisionTimePressure = Literal["low", "medium", "high"]
+DecisionReversibility = Literal["reversible", "partially_reversible", "irreversible"]
+DecisionImpact = Literal["low", "medium", "high"]
+DecisionReadiness = Literal["ready", "review", "escalate"]
+ReliancePosture = Literal[
+    "accept_with_review",
+    "challenge_model",
+    "defer_for_more_info",
+    "escalate",
+]
+
+
+class DecisionContext(StrictBaseModel):
+    decision_point: str = "operational recommendation"
+    actor_role: str = "authorized human reviewer"
+    objective: str = "Improve decision quality while preserving human accountability."
+    constraints: list[str] = Field(default_factory=list)
+    time_pressure: DecisionTimePressure = "medium"
+    reversibility: DecisionReversibility = "partially_reversible"
+    stakeholder_impact: DecisionImpact = "medium"
+    fallback_action: str = "Pause and route to manual review."
+
+
+class DecisionQualityAssessment(StrictBaseModel):
+    readiness: DecisionReadiness
+    framing_completeness: float = Field(ge=0, le=1)
+    evidence_sufficiency: float = Field(ge=0, le=1)
+    uncertainty_level: float = Field(ge=0, le=1)
+    reversibility_score: float = Field(ge=0, le=1)
+    value_of_information: str
+    escalation_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class DecisionUtilityEstimate(StrictBaseModel):
+    expected_benefit: float = Field(ge=0, le=1)
+    expected_harm: float = Field(ge=0, le=1)
+    false_positive_cost: float = Field(ge=0, le=1)
+    false_negative_cost: float = Field(ge=0, le=1)
+    delay_cost: float = Field(ge=0, le=1)
+    net_utility_score: float = Field(ge=-1, le=1)
+    rationale: str
+
+
+class RelianceGuidance(StrictBaseModel):
+    posture: ReliancePosture
+    rationale: str
+    required_checks: list[str] = Field(default_factory=list)
+    override_allowed: bool = True
+    human_accountability: str = "A named human remains accountable for any consequential action."
+
+
+def default_decision_context() -> DecisionContext:
+    return DecisionContext()
+
+
+def default_decision_quality_assessment() -> DecisionQualityAssessment:
+    return DecisionQualityAssessment(
+        readiness="review",
+        framing_completeness=0.5,
+        evidence_sufficiency=0.5,
+        uncertainty_level=0.5,
+        reversibility_score=0.5,
+        value_of_information="Review source evidence and collect more information if uncertainty remains material.",
+        notes=["Default assessment; runtime evaluator did not provide a lane-specific assessment."],
+    )
+
+
+def default_decision_utility_estimate() -> DecisionUtilityEstimate:
+    return DecisionUtilityEstimate(
+        expected_benefit=0.5,
+        expected_harm=0.5,
+        false_positive_cost=0.5,
+        false_negative_cost=0.5,
+        delay_cost=0.5,
+        net_utility_score=0.0,
+        rationale="Default utility estimate; runtime evaluator did not provide a lane-specific estimate.",
+    )
+
+
+def default_reliance_guidance() -> RelianceGuidance:
+    return RelianceGuidance(
+        posture="challenge_model",
+        rationale="Default guidance requires human review before relying on the output.",
+        required_checks=["Confirm the evidence, uncertainty, and escalation conditions before action."],
+    )
+
+
 class Soldier(StrictBaseModel):
     soldier_id: str
     unit_id: str
@@ -93,6 +181,7 @@ class ScoreRequest(StrictBaseModel):
     candidates: list[Soldier] | None = None
     seed: int = 42
     roles: list[RoleRequirement] | None = None
+    decision_context: DecisionContext | None = None
 
 
 CognitiveDimension = Literal[
@@ -148,6 +237,7 @@ class CognitiveAdaptationRequest(StrictBaseModel):
     evidence: list[TrainingEvidence] = Field(min_length=1)
     constraints: AdaptationConstraints = Field(default_factory=AdaptationConstraints)
     require_human_approval: bool = True
+    decision_context: DecisionContext | None = None
 
 
 class CognitiveDimensionEstimate(StrictBaseModel):
@@ -192,6 +282,11 @@ class ScenarioInjectRecommendation(StrictBaseModel):
     confidence: Confidence
     status: Literal["pending_approval", "blocked"] = "pending_approval"
     block_reason: str | None = None
+    decision_quality: DecisionQualityAssessment = Field(
+        default_factory=default_decision_quality_assessment
+    )
+    utility_estimate: DecisionUtilityEstimate = Field(default_factory=default_decision_utility_estimate)
+    reliance_guidance: RelianceGuidance = Field(default_factory=default_reliance_guidance)
 
 
 class CognitiveAdaptationResponse(StrictBaseModel):
@@ -204,6 +299,11 @@ class CognitiveAdaptationResponse(StrictBaseModel):
     blocked_recommendations: list[ScenarioInjectRecommendation] = Field(default_factory=list)
     trace: TraceMetadata
     approval_required: bool = True
+    decision_quality: DecisionQualityAssessment = Field(
+        default_factory=default_decision_quality_assessment
+    )
+    utility_estimate: DecisionUtilityEstimate = Field(default_factory=default_decision_utility_estimate)
+    reliance_guidance: RelianceGuidance = Field(default_factory=default_reliance_guidance)
 
 
 class ScenarioApprovalRequest(StrictBaseModel):
@@ -295,12 +395,18 @@ class RosterRecommendation(StrictBaseModel):
     fairness_audit: FairnessAudit
     career_forecast: CareerForecast
     trace: TraceMetadata
+    decision_quality: DecisionQualityAssessment = Field(
+        default_factory=default_decision_quality_assessment
+    )
+    utility_estimate: DecisionUtilityEstimate = Field(default_factory=default_decision_utility_estimate)
+    reliance_guidance: RelianceGuidance = Field(default_factory=default_reliance_guidance)
 
 
 class AgentRunRequest(StrictBaseModel):
     objective: Literal["mission_roster_recommendation"] = "mission_roster_recommendation"
     score_request: ScoreRequest
     require_human_approval: bool = True
+    decision_context: DecisionContext | None = None
 
 
 class AgentStep(StrictBaseModel):
@@ -516,6 +622,10 @@ class EvidenceBundlePolicyChecks(StrictBaseModel):
     evidence_threshold_ok: bool
     safety_ok: bool
     human_approval_required: bool = True
+    stale_source_ok: bool = True
+    control_marking_ok: bool = True
+    fatigue_overload_ok: bool = True
+    governance_findings: list[str] = Field(default_factory=list)
 
 
 class EvidenceBundleHashChain(StrictBaseModel):
@@ -559,6 +669,11 @@ class ScenarioOption(StrictBaseModel):
     evidence_bundle_id: str
     status: ScenarioOptionStatus = "draft"
     controls: ControlProperties = Field(default_factory=ControlProperties)
+    decision_quality: DecisionQualityAssessment = Field(
+        default_factory=default_decision_quality_assessment
+    )
+    utility_estimate: DecisionUtilityEstimate = Field(default_factory=default_decision_utility_estimate)
+    reliance_guidance: RelianceGuidance = Field(default_factory=default_reliance_guidance)
 
 
 class LessonLearned(StrictBaseModel):
@@ -587,6 +702,20 @@ class OperationalTwinDecision(StrictBaseModel):
     evidence_bundle_id: str
 
 
+class OperationalTwinOutcome(StrictBaseModel):
+    outcome_id: str
+    selected_option_id: str
+    observed_outcome_summary: str
+    instructor_rating: int = Field(ge=1, le=5)
+    safety_incident: bool = False
+    targeted_state_improvement_estimate: float = Field(ge=-1, le=1)
+    aar_notes: str
+    actor_id: str
+    recorded_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    evidence_bundle_id: str
+    controls: ControlProperties = Field(default_factory=ControlProperties)
+
+
 class OperationalTwinRequest(StrictBaseModel):
     mission_id: str = Field(min_length=1)
     operator_id: str = Field(min_length=1)
@@ -598,6 +727,7 @@ class OperationalTwinRequest(StrictBaseModel):
     environment: dict[str, Any] = Field(default_factory=dict)
     controls: ControlProperties = Field(default_factory=ControlProperties)
     require_human_approval: bool = True
+    decision_context: DecisionContext | None = None
 
 
 class AgentStageTrace(StrictBaseModel):
@@ -607,6 +737,10 @@ class AgentStageTrace(StrictBaseModel):
     status: Literal["completed", "fallback", "failed"]
     summary: str
     error: str | None = None
+    input_hash: str | None = None
+    output_hash: str | None = None
+    duration_ms: int | None = None
+    fallback_reason: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -616,7 +750,7 @@ class OperationalTwinResponse(StrictBaseModel):
     mission_id: str
     mode: TwinMode
     team_id: str
-    status: Literal["draft", "partially_decided", "completed"] = "draft"
+    status: Literal["draft", "partially_decided", "completed", "outcome_recorded"] = "draft"
     artifacts: list[ArtifactRecord]
     observations: list[ObservationRecord]
     environment_state: EnvironmentState | None = None
@@ -625,7 +759,13 @@ class OperationalTwinResponse(StrictBaseModel):
     scenario_options: list[ScenarioOption]
     decisions: list[OperationalTwinDecision] = Field(default_factory=list)
     lessons_learned: list[LessonLearned] = Field(default_factory=list)
+    outcomes: list[OperationalTwinOutcome] = Field(default_factory=list)
     agent_trace: list[AgentStageTrace] = Field(default_factory=list)
+    decision_quality: DecisionQualityAssessment = Field(
+        default_factory=default_decision_quality_assessment
+    )
+    utility_estimate: DecisionUtilityEstimate = Field(default_factory=default_decision_utility_estimate)
+    reliance_guidance: RelianceGuidance = Field(default_factory=default_reliance_guidance)
     created_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -646,6 +786,25 @@ class ScenarioOptionDecisionResponse(StrictBaseModel):
     decided_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class OperationalTwinOutcomeRequest(StrictBaseModel):
+    selected_option_id: str = Field(min_length=1)
+    observed_outcome_summary: str = Field(min_length=1, max_length=4000)
+    instructor_rating: int = Field(ge=1, le=5)
+    safety_incident: bool = False
+    targeted_state_improvement_estimate: float = Field(ge=-1, le=1)
+    aar_notes: str = Field(min_length=1, max_length=8000)
+    actor_id: str = Field(min_length=1)
+
+
+class OperationalTwinOutcomeResponse(StrictBaseModel):
+    twin_run_id: str
+    selected_option_id: str
+    status: Literal["outcome_recorded"]
+    outcome: OperationalTwinOutcome
+    lesson_learned: LessonLearned
+    recorded_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class AgentRun(StrictBaseModel):
     run_id: str
     status: AgentRunStatus
@@ -653,6 +812,11 @@ class AgentRun(StrictBaseModel):
     steps: list[AgentStep]
     recommendation: RosterRecommendation | None = None
     approval: AgentApproval | None = None
+    decision_quality: DecisionQualityAssessment = Field(
+        default_factory=default_decision_quality_assessment
+    )
+    utility_estimate: DecisionUtilityEstimate = Field(default_factory=default_decision_utility_estimate)
+    reliance_guidance: RelianceGuidance = Field(default_factory=default_reliance_guidance)
     error: str | None = None
     created_at: datetime
     updated_at: datetime

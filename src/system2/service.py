@@ -6,6 +6,7 @@ from .candidate_pool import CandidatePoolResolver, InMemoryCandidatePoolResolver
 from .career import career_forecast
 from .context_features import ContextAdjustment, context_adjustment_trace
 from .data import default_roles, generate_soldiers
+from .decision_quality import assess_roster_recommendation
 from .fairness import fairness_audit
 from .models import RoleRequirement, RosterRecommendation, ScoreRequest, Soldier, SourceReference, TraceMetadata
 from .narrative import build_assessment
@@ -130,6 +131,17 @@ class SelectionService:
             fairness_audit=fairness,
             career_forecast=career_forecast(selected_soldier),
             trace=trace,
+        )
+        decision_quality, utility_estimate, reliance_guidance = assess_roster_recommendation(
+            request,
+            recommendation,
+        )
+        recommendation = recommendation.model_copy(
+            update={
+                "decision_quality": decision_quality,
+                "utility_estimate": utility_estimate,
+                "reliance_guidance": reliance_guidance,
+            }
         )
         self.audit_log.append(
             "fairness_outcome",

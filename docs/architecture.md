@@ -42,6 +42,9 @@ Safety/doctrine auditor
     +--> approval-ready recommendations
     |
     v
+Decision-quality, utility, and reliance assessment
+    |
+    v
 Instructor approve / reject
     |
     v
@@ -76,15 +79,19 @@ Scenario director drafts exactly three options
 Critic marks pass / modify / escalate / reject
     |
     v
+Decision-quality, utility, and reliance assessment
+    |
+    v
 Human approve / reject / escalate decision
     |
     v
-Decision + lesson learned + entity_update_events
+Decision + lesson learned + outcome capture + entity_update_events
 ```
 
 This loop is the Foundry-style operational twin slice. Raw evidence, inferred
 state, draft options, and human decisions are separate objects. The service
-does not auto-approve scenario options or mission COAs.
+does not auto-approve scenario options or mission COAs. Outcomes are stored for
+evaluation and calibration readiness, not automatic model learning.
 
 The loop can run as a complete agentic system. With
 `SYSTEM2_AGENTIC_PROVIDER=auto` or `openai` and `OPENAI_API_KEY` configured,
@@ -99,7 +106,8 @@ the backend invokes four JSON-producing agents:
 
 When OpenAI is unavailable or disabled, the same API keeps using the
 deterministic runtime. Each run includes `agent_trace` entries that identify
-the provider, model, stage status, and fallback reason when one occurred.
+the provider, model, stage status, input/output hashes, duration, and fallback
+reason when one occurred.
 
 ## Roster Runtime Flow
 
@@ -130,6 +138,9 @@ Hungarian assignment solver
 fairness audit + narrative + trace metadata
     |
     v
+decision-quality, utility, and reliance assessment
+    |
+    v
 RosterRecommendation
 ```
 
@@ -147,6 +158,7 @@ The active package is `src/system2/`.
 | `cognitive.py` | Evidence fusion, cognitive state estimation, scenario direction, safety/doctrine gating, and adaptation approval |
 | `operational_twin.py` | Backend operational twin loop for multimodal evidence, state estimates, governed options, decisions, and lessons |
 | `llm.py` | JSON LLM client boundary for OpenAI-backed agent stages without requiring an SDK dependency |
+| `decision_quality.py` | Deterministic decision-quality, value-of-information, utility, and reliance guidance for recommendation responses |
 | `service.py` | Orchestrates scoring, assignment, fairness, career forecast, trace metadata, and audit logging |
 | `candidate_pool.py` | Resolves `candidate_pool_id` into canonical soldiers, role slots, and source references |
 | `models.py` | Pydantic request/response contracts and enums |
@@ -172,6 +184,7 @@ Canonical endpoints:
 | `POST` | `/v1/operational-twin/runs` | Multimodal operational twin run with evidence bundle and draft options |
 | `GET` | `/v1/operational-twin/runs/{twin_run_id}` | Operational twin run lookup |
 | `POST` | `/v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` | Human approve/reject/escalate decision |
+| `POST` | `/v1/operational-twin/runs/{twin_run_id}/outcome` | Outcome, rating, safety incident flag, and AAR capture |
 | `POST` | `/v1/score` | Mission roster scoring |
 | `POST` | `/v1/agent-runs` | Agentic recommendation workflow |
 | `GET` | `/v1/agent-runs/{run_id}` | Agent run lookup |
@@ -220,6 +233,10 @@ Core contracts:
 - `FairnessAudit`
 - `CareerForecast`
 - `TraceMetadata`
+- `DecisionContext`
+- `DecisionQualityAssessment`
+- `DecisionUtilityEstimate`
+- `RelianceGuidance`
 
 Every candidate assessment includes:
 
@@ -233,6 +250,12 @@ Every candidate assessment includes:
 - narrative
 - second-choice ID for primary roster entries
 
+Every roster, adaptation, operational twin, scenario option, and agent-run
+response includes decision-quality fields. These fields estimate framing
+completeness, evidence sufficiency, uncertainty, reversibility, value of
+information, expected utility, and recommended human reliance posture. They are
+not approval decisions and do not change scoring or assignment order.
+
 Every adaptation response includes:
 
 - state estimates for sensemaking, critical thinking, systems thinking,
@@ -242,6 +265,8 @@ Every adaptation response includes:
 - candidate scenario injects with expected developmental effect, risk,
   confidence, safety checks, and doctrine rationale
 - blocked recommendations when the safety/doctrine auditor rejects an option
+- decision-quality, utility, and reliance guidance for the response and each
+  scenario recommendation
 - trace metadata and source hashes for replay
 
 ## Cognitive Adaptation

@@ -72,6 +72,8 @@ The frontend should:
   `candidate_pool_id`, `adaptation_id`, `recommendation_id`, and `run_id`.
 - Display source references, confidence, risk, safety checks, and rationale for
   every recommendation.
+- Display `decision_quality`, `utility_estimate`, and `reliance_guidance` on
+  recommendation, operational twin, adaptation, and roster review surfaces.
 - Keep instructor approval explicit. The frontend must never auto-approve a
   scenario inject or roster decision.
 - Treat developmental evidence as sensitive. Do not expose raw reflective notes,
@@ -108,7 +110,8 @@ The frontend should have these screens or panels:
 - Evidence panel: voice notes, OCR text, checklist items, weather, terrain, AAR.
 - State panel: primary developmental dimension, likely failure mode, estimates.
 - Recommendation cards: proposed inject, expected effect, risk, confidence,
-  rationale, doctrine refs, safety checks.
+  rationale, doctrine refs, safety checks, decision readiness, value of
+  information, and reliance posture.
 - Approval controls: approve, reject, and rationale text box.
 - Trace drawer: source refs, model versions, hashes, generated timestamp.
 
@@ -119,7 +122,7 @@ Use this as a secondary or downstream talent workflow.
 ```text
 Frontend sends mission_id and candidate_pool_id
   -> POST /v1/score
-  -> render roster, second choices, fairness audit, risk factors
+  -> render roster, second choices, fairness audit, risk factors, decision quality
 ```
 
 ### 3. Agentic Roster Run
@@ -1011,6 +1014,8 @@ For production:
 - Add retention and purpose limitations for developmental evidence.
 - Add explicit frontend affordances for source refs, uncertainty, and human
   approval.
+- Render readiness `escalate` and reliance posture `escalate` as blocking UI
+  states for final approval until an authorized human resolves the issue.
 
 ## Known Backend Gaps The Frontend Must Handle
 

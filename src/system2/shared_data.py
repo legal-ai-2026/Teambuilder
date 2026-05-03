@@ -15,6 +15,8 @@ from .models import (
     CognitiveAdaptationResponse,
     ContextChunkInput,
     GraphFactInput,
+    OperationalTwinOutcomeRequest,
+    OperationalTwinOutcomeResponse,
     OperationalTwinRequest,
     OperationalTwinResponse,
     RoleRequirement,
@@ -312,6 +314,9 @@ def build_decision_snapshot(run: AgentRun) -> dict[str, Any]:
             "run_id": run.run_id,
             "status": run.status.value,
             "recommendation": recommendation_payload,
+            "decision_quality": run.recommendation.decision_quality.model_dump(mode="json"),
+            "utility_estimate": run.recommendation.utility_estimate.model_dump(mode="json"),
+            "reliance_guidance": run.recommendation.reliance_guidance.model_dump(mode="json"),
             "source_refs": [ref.model_dump(mode="json") for ref in run.recommendation.trace.source_refs],
         },
     }
@@ -337,6 +342,9 @@ def build_direct_score_decision_snapshot(
             "status": "returned",
             "request": request.model_dump(mode="json"),
             "recommendation": recommendation_payload,
+            "decision_quality": recommendation.decision_quality.model_dump(mode="json"),
+            "utility_estimate": recommendation.utility_estimate.model_dump(mode="json"),
+            "reliance_guidance": recommendation.reliance_guidance.model_dump(mode="json"),
             "source_refs": [ref.model_dump(mode="json") for ref in recommendation.trace.source_refs],
         },
     }
@@ -376,6 +384,9 @@ def build_approval_update_event(run: AgentRun) -> dict[str, Any]:
             "selected_assignments": selected,
             "selected_soldier_ids": [item["soldier_id"] for item in selected],
             "slot_ids": [item["slot_id"] for item in selected],
+            "decision_quality": run.recommendation.decision_quality.model_dump(mode="json"),
+            "utility_estimate": run.recommendation.utility_estimate.model_dump(mode="json"),
+            "reliance_guidance": run.recommendation.reliance_guidance.model_dump(mode="json"),
             "source_refs": [ref.model_dump(mode="json") for ref in run.recommendation.trace.source_refs],
         },
         "previous_source_hash": canonical_hash(previous_payload),
@@ -493,6 +504,9 @@ def build_cognitive_adaptation_update_event(
         "blocked_recommendation_ids": [
             item.recommendation_id for item in response.blocked_recommendations
         ],
+        "decision_quality": response.decision_quality.model_dump(mode="json"),
+        "utility_estimate": response.utility_estimate.model_dump(mode="json"),
+        "reliance_guidance": response.reliance_guidance.model_dump(mode="json"),
         "source_refs": [ref.model_dump(mode="json") for ref in response.trace.source_refs],
     }
     return {
@@ -528,6 +542,9 @@ def build_scenario_approval_update_event(
             if approval.approved_inject is not None
             else None
         ),
+        "decision_quality": adaptation.decision_quality.model_dump(mode="json"),
+        "utility_estimate": adaptation.utility_estimate.model_dump(mode="json"),
+        "reliance_guidance": adaptation.reliance_guidance.model_dump(mode="json"),
         "source_refs": [ref.model_dump(mode="json") for ref in adaptation.trace.source_refs],
     }
     return {
@@ -565,6 +582,9 @@ def build_operational_twin_update_event(
             item.scenario_option_id for item in response.scenario_options
         ],
         "policy_checks": response.evidence_bundle.policy_checks.model_dump(mode="json"),
+        "decision_quality": response.decision_quality.model_dump(mode="json"),
+        "utility_estimate": response.utility_estimate.model_dump(mode="json"),
+        "reliance_guidance": response.reliance_guidance.model_dump(mode="json"),
     }
     return {
         "event_id": f"update-{uuid4()}",
@@ -602,6 +622,9 @@ def build_operational_twin_decision_update_event(
             else None
         ),
         "evidence_bundle_id": response.decision.evidence_bundle_id,
+        "decision_quality": run.decision_quality.model_dump(mode="json"),
+        "utility_estimate": run.utility_estimate.model_dump(mode="json"),
+        "reliance_guidance": run.reliance_guidance.model_dump(mode="json"),
     }
     return {
         "event_id": f"update-{uuid4()}",
@@ -617,6 +640,43 @@ def build_operational_twin_decision_update_event(
         "recorded_at": datetime.now(UTC),
         "actor_id": request.actor_id,
         "reason": request.comment,
+    }
+
+
+def build_operational_twin_outcome_update_event(
+    run: OperationalTwinResponse,
+    request: OperationalTwinOutcomeRequest,
+    response: OperationalTwinOutcomeResponse,
+) -> dict[str, Any]:
+    payload = {
+        "twin_run_id": run.twin_run_id,
+        "mission_id": run.mission_id,
+        "team_id": run.team_id,
+        "selected_option_id": response.selected_option_id,
+        "outcome_id": response.outcome.outcome_id,
+        "lesson_id": response.lesson_learned.lesson_id,
+        "instructor_rating": request.instructor_rating,
+        "safety_incident": request.safety_incident,
+        "targeted_state_improvement_estimate": request.targeted_state_improvement_estimate,
+        "evidence_bundle_id": response.outcome.evidence_bundle_id,
+        "decision_quality": run.decision_quality.model_dump(mode="json"),
+        "utility_estimate": run.utility_estimate.model_dump(mode="json"),
+        "reliance_guidance": run.reliance_guidance.model_dump(mode="json"),
+    }
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "operational_twin_outcome",
+        "entity_id": response.outcome.outcome_id,
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": run.twin_run_id,
+        "operation": "observe_outcome",
+        "event_payload": payload,
+        "previous_source_hash": None,
+        "new_source_hash": canonical_hash(response.model_dump(mode="json")),
+        "observed_at": response.recorded_at_utc,
+        "recorded_at": datetime.now(UTC),
+        "actor_id": request.actor_id,
+        "reason": request.aar_notes,
     }
 
 

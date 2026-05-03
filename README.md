@@ -12,6 +12,12 @@ layer uses deterministic TabPFN-compatible and hierarchical-Bayes-compatible
 adapters, so heavier models can replace either path without changing API
 behavior.
 
+Every consequential recommendation also includes a deterministic
+decision-quality layer: framing completeness, evidence sufficiency,
+uncertainty, reversibility, value of information, expected utility, and
+reliance posture. These fields support human review; they do not approve
+scenario injects, roster decisions, or mission options.
+
 For integration with the other Spire applications, share
 `docs/shared-data-contract.md`. It defines canonical IDs, shared Postgres,
 pgvector, Redis, and FalkorDB usage, source references for agent outputs, and
@@ -55,11 +61,16 @@ AUDIT_BACKEND=postgres
 AGENT_REPOSITORY_BACKEND=postgres
 AGENT_STATE_BACKEND=redis
 CANDIDATE_POOL_BACKEND=postgres
+OPERATIONAL_TWIN_REPOSITORY_BACKEND=postgres
 RETRIEVAL_BACKEND=pgvector
 GRAPH_BACKEND=falkordb
 SHARED_DATA_BACKEND=postgres
 SYSTEM2_AUDIT_LOG=/var/log/system2/audit.jsonl
 SYSTEM2_AGENTIC_PROVIDER=auto
+SYSTEM2_AGENTIC_MAX_RETRIES=1
+SYSTEM2_AGENTIC_TIMEOUT_SECONDS=45
+STT_PROVIDER=none
+OCR_PROVIDER=none
 OPENAI_API_KEY=replace-me-openai-key
 OPENAI_MODEL=gpt-5.4-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
@@ -91,7 +102,10 @@ The operational twin supports three agentic runtime modes through
 OpenAI when `OPENAI_API_KEY` is present and otherwise keeps the local
 deterministic fallback. The OpenAI path runs four explicit agents: perception,
 state estimation, scenario direction, and critic review. Every run returns
-`agent_trace` so callers can see which provider handled each stage.
+`agent_trace` with input/output hashes, duration, and fallback reason so callers
+can see which provider handled each stage. Consequential options stay in draft
+until a human decision is recorded, and approved options can later receive an
+outcome/AAR capture without automatic model learning.
 
 ## Quick Start
 
@@ -113,10 +127,11 @@ pip install -e ".[dev,infra]"
 
 With the Postgres-backed operational adapters enabled, the app connects to
 `DATABASE_URL` through PgBouncer and initializes the adaptation, agent-run,
-audit, candidate-pool projection, shared update ledger, decision snapshot, and
-pgvector context tables at startup when those backends are enabled. Keep
+audit, operational-twin run, candidate-pool projection, shared update ledger,
+decision snapshot, and pgvector context tables at startup when those backends are enabled. Keep
 `ADAPTATION_REPOSITORY_BACKEND=memory`, `AGENT_REPOSITORY_BACKEND=memory`,
 `AUDIT_BACKEND=file`, `CANDIDATE_POOL_BACKEND=local`,
+`OPERATIONAL_TWIN_REPOSITORY_BACKEND=memory`,
 `RETRIEVAL_BACKEND=local`, and `SHARED_DATA_BACKEND=memory` for local runs
 without Postgres.
 
@@ -136,6 +151,7 @@ python scripts/smoke_infra.py --env-file .env.infra --migrate
 - `POST /v1/operational-twin/runs` - ingests multimodal evidence into an operational twin, estimates latent state, and drafts three governed options.
 - `GET /v1/operational-twin/runs/{twin_run_id}` - fetches a stored operational twin run.
 - `POST /v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` - records approve/reject/escalate decisions and emits lessons learned.
+- `POST /v1/operational-twin/runs/{twin_run_id}/outcome` - captures selected-option outcome, rating, safety incident flag, AAR notes, and a draft lesson.
 - `POST /v1/agent-runs` - runs the agentic recommendation workflow and returns an approval-ready run.
 - `GET /v1/agent-runs/{run_id}` - fetches an agent run by ID.
 - `POST /v1/agent-runs/{run_id}/approval` - records an authorized approve/reject decision.

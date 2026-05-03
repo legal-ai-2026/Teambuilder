@@ -55,6 +55,14 @@ class AgentOrchestrator:
         self.settings = settings or InfraSettings.from_env()
 
     def run(self, request: AgentRunRequest) -> AgentRun:
+        if request.decision_context is not None and request.score_request.decision_context is None:
+            request = request.model_copy(
+                update={
+                    "score_request": request.score_request.model_copy(
+                        update={"decision_context": request.decision_context}
+                    )
+                }
+            )
         run = self.repository.create(request)
         self.state_store.set_status(run.run_id, AgentRunStatus.queued)
         if not self.state_store.acquire_lock(run.run_id):
@@ -123,6 +131,9 @@ class AgentOrchestrator:
                         "status": status,
                         "steps": steps,
                         "recommendation": recommendation,
+                        "decision_quality": recommendation.decision_quality,
+                        "utility_estimate": recommendation.utility_estimate,
+                        "reliance_guidance": recommendation.reliance_guidance,
                         "error": None,
                     }
                 )

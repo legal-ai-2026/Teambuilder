@@ -4,7 +4,12 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
-from .agent_stack import build_adaptation_repository, build_agent_orchestrator, build_selection_service
+from .agent_stack import (
+    build_adaptation_repository,
+    build_agent_orchestrator,
+    build_operational_twin_repository,
+    build_selection_service,
+)
 from .agent_tools import ContextualScoringInput, contextual_scoring_input
 from .config import InfraSettings
 from .cognitive import CognitiveAdaptationService
@@ -18,6 +23,8 @@ from .models import (
     ContextIngestResult,
     GraphIngestRequest,
     GraphIngestResult,
+    OperationalTwinOutcomeRequest,
+    OperationalTwinOutcomeResponse,
     OperationalTwinRequest,
     OperationalTwinResponse,
     RosterRecommendation,
@@ -72,18 +79,23 @@ cognitive_service = CognitiveAdaptationService(
 operational_twin_service = OperationalTwinService(
     audit_log=service.audit_log,
     shared_data_sink=agent_orchestrator.shared_data_sink,
+    repository=build_operational_twin_repository(agent_orchestrator.settings),
     agent_provider=api_settings.agentic_provider,
     llm_client=(
         OpenAIJsonAgentClient(
             api_key=api_settings.openai_api_key,
             model=api_settings.openai_model,
             base_url=api_settings.openai_base_url,
+            timeout_seconds=api_settings.agentic_timeout_seconds,
         )
         if api_settings.openai_api_key
         and api_settings.agentic_provider in {"auto", "openai"}
         else None
     ),
     llm_model=api_settings.openai_model,
+    agent_max_retries=api_settings.agentic_max_retries,
+    stt_provider=api_settings.stt_provider,
+    ocr_provider=api_settings.ocr_provider,
 )
 
 
@@ -219,6 +231,24 @@ def record_operational_twin_option_decision(
     if decision is None:
         raise HTTPException(status_code=404, detail="operational twin run not found")
     return decision
+
+
+@app.post(
+    "/v1/operational-twin/runs/{twin_run_id}/outcome",
+    response_model=OperationalTwinOutcomeResponse,
+)
+def record_operational_twin_outcome(
+    twin_run_id: str,
+    request: OperationalTwinOutcomeRequest,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> OperationalTwinOutcomeResponse:
+    try:
+        outcome = operational_twin_service.record_outcome(twin_run_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="operational twin run not found")
+    return outcome
 
 
 @app.post("/v1/agent-runs", response_model=AgentRun)
