@@ -117,7 +117,12 @@ dimension scores, and an optional `source_ref` for replay.
 
 Operational integrations should use `candidate_pool_id` with
 `CANDIDATE_POOL_BACKEND=postgres` so the service resolves candidates from
-`candidate_pools_current`, `soldiers_current`, and `role_slots_current`.
+`candidate_pools_current`, `soldiers_current`, `role_slots_current`,
+`training_observations_current`, and `deployment_outcomes_current`.
+Training and outcome projections can enrich competencies, milestones,
+readiness, fatigue, sandbox score, prior mission count, and bounded readiness
+or risk fields before scoring. Direct score calls also attach retrieval and
+graph source refs from the configured context adapters.
 Synthetic generation exists for local development, repeatable tests, and
 disconnected environments. If `candidate_pool_id` is supplied while the local
 candidate-pool backend is active and no local pool has been registered, the
@@ -211,9 +216,10 @@ update events.
 
 Defines the candidate-pool resolver protocol, local resolver, Postgres resolver,
 and table schema for `candidate_pools_current`, `soldiers_current`, and
-`role_slots_current`. The Postgres resolver is strict: if a requested
-`candidate_pool_id` is missing, references unknown soldiers, or has no mission
-role slots, scoring fails instead of falling back to synthetic data.
+`role_slots_current`, plus the shared training and deployment projection tables.
+The Postgres resolver is strict: if a requested `candidate_pool_id` is missing,
+references unknown soldiers, or has no mission role slots, scoring fails instead
+of falling back to synthetic data.
 
 `shared_data.py`
 

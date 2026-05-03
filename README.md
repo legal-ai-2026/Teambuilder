@@ -199,6 +199,10 @@ curl -X POST http://127.0.0.1:8000/v1/score \
 With `CANDIDATE_POOL_BACKEND=postgres`, a missing pool is a request error. With
 `CANDIDATE_POOL_BACKEND=local`, the service can still fall back to deterministic
 synthetic candidates and marks that fallback in `trace.source_refs`.
+Postgres candidate-pool scoring also reads `training_observations_current` and
+`deployment_outcomes_current` to enrich bounded readiness, fatigue, milestone,
+competency, and prior-mission features before scoring. Direct score responses
+include retrieval and graph source refs when those adapters are configured.
 
 ## Agentic Workflow
 

@@ -915,12 +915,16 @@ The current System 2 implementation already writes:
 - FalkorDB facts through `/v1/graph/facts`
 - Redis status and lock keys
 - recommendation `trace.source_refs` and `trace.input_source_hashes`
+- ID-only candidate-pool scoring enrichment from `training_observations_current`
+  and `deployment_outcomes_current`
+- retrieval and graph source refs on direct `/v1/score` and agent-run
+  recommendations
 
 The following are contract requirements still to implement:
 
-- Fuller enrichment of ID-only requests with training observations, deployment
-  outcomes, retrieval context, and graph facts beyond the currently resolved
-  candidates and role slots.
+- Richer scoring features derived directly from retrieved doctrine/SOP text and
+  graph relationships, beyond the current source refs and candidate projection
+  enrichment.
 
 ## Postgres Tables
 
@@ -1207,8 +1211,9 @@ Preferred frontend flow:
 }
 ```
 
-3. System 2 resolves candidates and role slots from Postgres, then attaches
-   training, context, and graph facts from the configured shared stores.
+3. System 2 resolves candidates and role slots from Postgres, enriches
+   candidate features from training and deployment projections, then attaches
+   retrieval and graph source refs from the configured shared stores.
 4. Frontend displays recommendation and source refs.
 5. Authorized user approves or rejects.
 6. Approval/rejection writes a separate update event.

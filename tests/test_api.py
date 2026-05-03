@@ -100,6 +100,18 @@ def test_score_returns_roster_and_audit() -> None:
         )
 
 
+def test_direct_score_api_attaches_retrieval_and_graph_refs() -> None:
+    api_service.enable()
+
+    payload = score(ScoreRequest(mission_id="direct-context", candidate_count=80, seed=45))
+
+    roles = {ref.role for ref in payload.trace.source_refs}
+    assert "retrieval_context" in roles
+    assert "graph_fact" in roles
+    assert any(ref.ref.startswith("pgvector://system2_context_chunks/") for ref in payload.trace.source_refs)
+    assert any(ref.ref.startswith("falkordb://system2/facts/") for ref in payload.trace.source_refs)
+
+
 def test_direct_score_api_records_decision_snapshot(monkeypatch) -> None:
     api_service.enable()
     sink = InMemorySharedDataSink()
@@ -496,6 +508,8 @@ def test_candidate_pool_schema_contains_shared_projection_tables() -> None:
     assert "CREATE TABLE IF NOT EXISTS candidate_pools_current" in CANDIDATE_POOL_SCHEMA_SQL
     assert "CREATE TABLE IF NOT EXISTS soldiers_current" in CANDIDATE_POOL_SCHEMA_SQL
     assert "CREATE TABLE IF NOT EXISTS role_slots_current" in CANDIDATE_POOL_SCHEMA_SQL
+    assert "CREATE TABLE IF NOT EXISTS training_observations_current" in CANDIDATE_POOL_SCHEMA_SQL
+    assert "CREATE TABLE IF NOT EXISTS deployment_outcomes_current" in CANDIDATE_POOL_SCHEMA_SQL
 
 
 def test_adaptation_schema_contains_lookup_indexes() -> None:
@@ -789,6 +803,64 @@ def test_candidate_pool_resolver_replaces_synthetic_fallback_refs() -> None:
     assert refs[f"postgres://candidate_pools_current/{pool_id}"].metadata["candidate_count"] == 80
     assert "synthetic://system2/generated-candidates/resolved-mission/999" not in refs
     assert payload.trace.feature_hash == feature_hash(soldiers, roles)
+
+
+def test_candidate_pool_resolver_enriches_from_training_and_outcome_projections() -> None:
+    mission_id = "enriched-mission"
+    pool_id = "pool-enriched"
+    soldiers = generate_soldiers(80, seed=7)
+    roles = default_roles()
+    target_id = soldiers[0].soldier_id
+    resolver = InMemoryCandidatePoolResolver()
+    resolver.add_pool(
+        pool_id,
+        mission_id,
+        soldiers,
+        roles,
+        build_local_candidate_pool_source_refs(pool_id, mission_id, soldiers, roles),
+        training_projections={
+            target_id: {
+                "competencies": {"communication": 5, "decision_under_stress": 5},
+                "milestones": {"patrol_lead": 5},
+                "metrics": {"fatigue_index": 0.12, "sandbox_score": 0.94},
+            }
+        },
+        deployment_outcome_projections={
+            target_id: [
+                {
+                    "mission_id": "prior-mission-1",
+                    "prior_missions": 14,
+                    "operational_readiness": 0.93,
+                }
+            ]
+        },
+    )
+
+    resolved = resolver.resolve(ScoreRequest(mission_id=mission_id, candidate_pool_id=pool_id))
+    assert resolved is not None
+    enriched = next(soldier for soldier in resolved.candidates if soldier.soldier_id == target_id)
+    refs = {ref.ref: ref for ref in resolved.source_refs}
+
+    assert enriched.competencies["communication"] == 5
+    assert enriched.competencies["decision_under_stress"] == 5
+    assert enriched.milestones["patrol_lead"] == 5
+    assert enriched.fatigue_index == pytest.approx(0.12)
+    assert enriched.sandbox_score == pytest.approx(0.94)
+    assert enriched.prior_missions == 14
+    assert enriched.operational_readiness == pytest.approx(0.93)
+    assert refs[f"postgres://training_observations_current/{target_id}"].role == "training_projection"
+    assert refs[f"postgres://deployment_outcomes_current/prior-mission-1/{target_id}"].role == (
+        "deployment_outcome_projection"
+    )
+
+    payload = SelectionService(candidate_pool_resolver=resolver).score(
+        ScoreRequest(mission_id=mission_id, candidate_pool_id=pool_id)
+    )
+    assert f"postgres://training_observations_current/{target_id}" in payload.trace.input_source_hashes
+    assert (
+        f"postgres://deployment_outcomes_current/prior-mission-1/{target_id}"
+        in payload.trace.input_source_hashes
+    )
 
 
 def test_candidate_pool_request_roles_replace_resolved_role_refs() -> None:

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .agent_stack import build_adaptation_repository, build_agent_orchestrator, build_selection_service
+from .agent_tools import graph_context, retrieval_context
 from .config import InfraSettings
 from .cognitive import CognitiveAdaptationService
 from .models import (
@@ -21,6 +22,7 @@ from .models import (
     ScenarioApprovalRequest,
     ScenarioApprovalResponse,
     ScoreRequest,
+    SourceReference,
 )
 from .security import ApiKeyGuard
 from .service import SelectionService
@@ -29,6 +31,7 @@ from .shared_data import (
     build_direct_score_decision_snapshot,
     build_graph_update_events,
     build_kill_switch_update_event,
+    attach_source_refs,
 )
 
 
@@ -84,6 +87,7 @@ def score(
 ) -> RosterRecommendation:
     try:
         recommendation = service.score(request)
+        recommendation = attach_source_refs(recommendation, _direct_score_context_refs(request))
         agent_orchestrator.shared_data_sink.record_decision_snapshot(
             build_direct_score_decision_snapshot(request, recommendation)
         )
@@ -226,3 +230,18 @@ def enable(_auth: None = Depends(api_key_guard.require_admin_key)) -> dict[str, 
         build_kill_switch_update_event(disabled=False)
     )
     return {"disabled": service.disabled}
+
+
+def _direct_score_context_refs(request: ScoreRequest) -> list[SourceReference]:
+    agent_request = AgentRunRequest(score_request=request, require_human_approval=False)
+    refs: list[SourceReference] = []
+    for _, evidence in (
+        retrieval_context(api_settings, agent_orchestrator.retriever),
+        graph_context(api_settings, agent_request, agent_orchestrator.graph_provider),
+    ):
+        raw_refs = evidence.get("source_refs", [])
+        if not isinstance(raw_refs, list):
+            continue
+        for raw_ref in raw_refs:
+            refs.append(SourceReference.model_validate(raw_ref))
+    return refs
