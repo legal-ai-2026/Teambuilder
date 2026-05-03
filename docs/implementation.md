@@ -89,7 +89,8 @@ request validation, protected-attribute exclusion from feature hashing,
 counterfactual fairness invariance, proxy-feature detection, group fairness
 metrics, low-confidence disagreement behavior, candidate-pool resolution, and
 audit hash-chain validation. It also covers cognitive adaptation recommendation,
-safety blocking, instructor approval, direct score snapshots, kill-switch shared
+safety blocking, instructor approval, operational twin decisions and outcomes,
+deployment recommendation wrapping, direct score snapshots, kill-switch shared
 update events, API-key parsing, and CORS/security configuration.
 
 ## Data Inputs
@@ -139,6 +140,26 @@ ingest and extraction; System 2 consumes those processed outputs plus mission,
 terrain, weather, readiness, and outcome context to recommend individual or
 platoon deployment/training options.
 
+`DeploymentRecommendationRequest` accepts:
+
+- `mission_id`, `requester_id`, `team_id`, and `scope`
+- optional `target_soldier_ids` for individual recommendation wrappers
+- required `mission_context`
+- optional `terrain`, `weather`, readiness signals, and operational
+  constraints
+- zero or more `ArtifactInput` records from processed System 1 observations,
+  transcripts, OCR text, telemetry summaries, or manual notes
+- optional `DecisionContext`
+
+The deployment route converts those inputs into a mission-mode
+`OperationalTwinRequest`, runs the twin, and returns a
+`DeploymentRecommendationResponse` with platoon posture, per-soldier posture,
+three option recommendations, required controls, agent trace, source refs,
+decision quality, utility, and reliance guidance. It writes a
+`deployment_recommendation` shared update event, persists the recommendation,
+and supports fetch/list, approve/reject/escalate, and outcome/AAR capture. It
+does not issue final deployment orders.
+
 `ScoreRequest` accepts either:
 
 - `candidate_pool_id`: canonical ID recorded for cross-system provenance
@@ -181,6 +202,11 @@ instructor approval or rejection. `/v1/operational-twin/runs` runs the
 Foundry-style operational twin loop, the matching `GET` route fetches the stored
 run, the option decision route records approve/reject/escalate decisions, and
 the outcome route captures selected-option outcome and AAR data.
+`/v1/deployment-recommendations` creates a first-class individual/platoon
+deployment recommendation from processed evidence and a mission-mode
+operational twin run. The matching `GET`, mission list, approval, and outcome
+routes complete the recommendation -> human decision -> observed outcome ->
+lesson draft lifecycle.
 `/v1/agent-runs` starts the roster recommendation workflow,
 `/v1/agent-runs/{run_id}` fetches the stored run, and
 `/v1/agent-runs/{run_id}/approval` records approval or rejection. The context
@@ -201,6 +227,16 @@ reject. A separate decision method records the named human decision and creates
 a lesson-learned draft when an option is approved. Outcome capture stores
 observed results for future evaluation/calibration without automatically
 feeding them back into model learning.
+
+`deployment.py`
+
+Wraps the operational twin into a product-facing deployment recommendation
+contract. It builds mission-mode twin requests from processed System 1 evidence,
+mission context, terrain, weather, readiness, and constraints; selects the best
+non-rejected option by utility, confidence, and risk; derives platoon and
+individual posture; attaches controls, source refs, and agent trace; persists
+the lifecycle; records approval/escalation/rejection and outcome decisions; and
+writes audit plus deployment recommendation update events.
 
 `llm.py`
 
@@ -295,9 +331,11 @@ of falling back to synthetic data.
 Builds source references, stable hashes, shared `entity_update_events`, and
 `decision_snapshots`. The Postgres sink creates the shared tables used by the
 three-project contract. Direct score calls write `decision_snapshots`, agent
-approvals write recommendation update events, and kill-switch changes write
-system-control update events. The in-memory sink keeps local tests and
-disconnected development dependency-free.
+approvals write recommendation update events, deployment recommendations write
+`deployment_recommendation` update events, deployment approval/outcome actions
+write lifecycle update events, and kill-switch changes write system-control
+update events. The in-memory sink keeps local tests and disconnected
+development dependency-free.
 
 `retrieval.py`
 
@@ -391,6 +429,8 @@ mapping.
 - Fairness audit results are returned on every successful score response.
 - Recommendations include source references and input source hashes.
 - Recommendations include decision-quality, utility, and reliance guidance.
+- Deployment recommendations are human-gated, source-linked, and built only
+  from processed evidence plus mission, terrain, weather, and readiness context.
 - Audit records are hash-chained and redact protected attributes before
   persistence.
 - Agent runs write decision snapshots for drift checks when shared-data
@@ -422,6 +462,8 @@ The default output path is `artifacts/synthetic-cohort.jsonl`.
 - ID-only scoring resolves candidates and role slots, but training observation
   and deployment outcome enrichment still requires the shared projections to be
   populated and wired into the scoring features.
+- Deployment recommendations inherit team readiness for individual wrappers
+  until a separate soldier-level deployment readiness model is added.
 - Deterministic model adapters stand in for heavier trained adapters.
 - Career forecasting is rule-based and secondary to roster assignment.
 - System 1 and System 3 integrations use shared stores and events; direct

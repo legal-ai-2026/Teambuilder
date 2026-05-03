@@ -10,17 +10,22 @@ from system2.api import (
     agent_orchestrator,
     create_agent_run,
     create_adaptation,
+    create_deployment_recommendation,
     create_operational_twin_run,
     disable,
     enable,
     get_adaptation,
     get_agent_run,
+    get_deployment_recommendation,
     get_operational_twin_run,
     ingest_context_chunks,
     ingest_graph_facts,
+    list_mission_deployment_recommendations,
     list_mission_adaptations,
     record_adaptation_approval,
     record_agent_run_approval,
+    record_deployment_recommendation_approval,
+    record_deployment_recommendation_outcome,
     record_operational_twin_option_decision,
     record_operational_twin_outcome,
     score,
@@ -39,6 +44,7 @@ from system2.agent_stack import (
     build_adaptation_repository,
     build_agent_orchestrator,
     build_audit_log,
+    build_deployment_repository,
     build_operational_twin_repository,
     build_shared_data_sink,
 )
@@ -61,6 +67,13 @@ from system2.config import InfraSettings, redact_url
 from system2.context_features import extract_context_adjustments
 from system2.cognitive import CognitiveAdaptationService
 from system2.data import default_roles, generate_soldiers
+from system2.deployment import DeploymentRecommendationService
+from system2.deployment import (
+    DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL,
+    InMemoryDeploymentRecommendationRepository,
+    dump_deployment_recommendation,
+    load_deployment_recommendation,
+)
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
 from system2.models import (
     AgentApprovalDecision,
@@ -74,6 +87,9 @@ from system2.models import (
     ContextChunkInput,
     ContextIngestRequest,
     DecisionContext,
+    DeploymentApprovalRequest,
+    DeploymentOutcomeRequest,
+    DeploymentRecommendationRequest,
     GraphFactInput,
     GraphIngestRequest,
     ObservationInput,
@@ -95,6 +111,7 @@ from system2.operational_twin import (
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
 from system2.graph import GraphFact, LocalGraphContextProvider, cypher_identifier, cypher_quote, parse_falkordb_rows
+from system2.llm import OpenAIJsonAgentClient
 from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, PgVectorContextRetriever, embedding_literal
 from system2.scoring import feature_hash, role_fit, score_matrix
 from system2.security import ApiKeyGuard
@@ -301,6 +318,37 @@ class DuplicateScenarioJsonAgentClient(FakeJsonAgentClient):
                 ]
             }
         return super().complete_json(stage=stage, system=system, user=user)
+
+
+def test_openai_json_agent_client_uses_default_temperature(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "{\"ok\": true}"}}]}).encode()
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    client = OpenAIJsonAgentClient(api_key="test-key", model="gpt-5.5", timeout_seconds=12.0)
+    assert client.complete_json(stage="test", system="Return JSON.", user="{}") == {"ok": True}
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "gpt-5.5"
+    assert payload["response_format"] == {"type": "json_object"}
+    assert "temperature" not in payload
+    assert captured["timeout"] == 12.0
 
 
 def test_score_returns_roster_and_audit() -> None:
@@ -1198,6 +1246,320 @@ def test_operational_twin_outcome_api_round_trip() -> None:
     assert get_operational_twin_run(payload.twin_run_id).outcomes[0].outcome_id == outcome.outcome.outcome_id
 
 
+def test_deployment_recommendation_wraps_operational_twin_with_first_class_contract(tmp_path) -> None:
+    sink = InMemorySharedDataSink()
+    twin_service = OperationalTwinService(
+        audit_log=AuditLog(tmp_path / "audit.jsonl"),
+        shared_data_sink=sink,
+    )
+    service = DeploymentRecommendationService(
+        operational_twin_service=twin_service,
+        audit_log=AuditLog(tmp_path / "deployment-audit.jsonl"),
+        shared_data_sink=sink,
+    )
+
+    payload = service.recommend(
+        DeploymentRecommendationRequest(
+            mission_id="deployment-demo",
+            requester_id="commander-1",
+            team_id="platoon-alpha",
+            scope="platoon",
+            target_soldier_ids=["RGR-0001", "RGR-0002"],
+            mission_context=(
+                "Move platoon to observation position with time-sensitive support "
+                "coordination and no avoidable fatigue load."
+            ),
+            terrain="Rough wooded draw with constrained visibility.",
+            weather={"weather": "cold wind", "temperature_c": 3, "wind_speed": 18},
+            readiness={"sleep_hours": 4.2, "hydration": 0.62},
+            processed_observations=[
+                ArtifactInput(
+                    kind="system1_observation",
+                    content=(
+                        "System 1 observation: missed two comms acknowledgements; "
+                        "leader recovered after terrain-support timing cue."
+                    ),
+                    metadata={"observation_id": "s1-obs-001"},
+                )
+            ],
+        )
+    )
+
+    assert payload.deployment_recommendation_id.startswith("deploy-")
+    assert payload.status == "pending_approval"
+    assert payload.scope == "platoon"
+    assert payload.source_twin_run_id.startswith("twin-")
+    assert payload.platoon_recommendation.posture in {
+        "deploy",
+        "deploy_with_controls",
+        "hold",
+        "escalate_review",
+    }
+    assert payload.platoon_recommendation.required_controls
+    assert len(payload.individual_recommendations) == 2
+    assert len(payload.options) == 3
+    assert all(item.option_type in {"mission_coa", "rehearsal_variant"} for item in payload.options)
+    assert payload.decision_quality.value_of_information
+    assert sink.update_events[-1]["entity_type"] == "deployment_recommendation"
+    assert sink.update_events[-1]["event_payload"]["source_twin_run_id"] == payload.source_twin_run_id
+
+
+def test_deployment_recommendation_api_round_trip() -> None:
+    payload = create_deployment_recommendation(
+        DeploymentRecommendationRequest(
+            mission_id="deployment-api-demo",
+            requester_id="commander-1",
+            team_id="platoon-api",
+            scope="individual",
+            target_soldier_ids=["RGR-0003"],
+            mission_context="Deploy one element for route confirmation with weather and terrain constraints.",
+            terrain="Narrow draw with limited visibility.",
+            weather={"weather": "rain", "wind_speed": 12},
+            processed_observations=[
+                ArtifactInput(
+                    kind="system1_observation",
+                    content="System 1 observation: individual maintained comms discipline under moderate load.",
+                )
+            ],
+        )
+    )
+
+    assert payload.mission_id == "deployment-api-demo"
+    assert payload.scope == "individual"
+    assert len(payload.individual_recommendations) == 1
+    assert payload.individual_recommendations[0].soldier_id == "RGR-0003"
+    assert payload.reliance_guidance.human_accountability
+
+
+def test_deployment_recommendation_lifecycle_records_approval_outcome_and_lesson(tmp_path) -> None:
+    sink = InMemorySharedDataSink()
+    repository = InMemoryDeploymentRecommendationRepository()
+    twin_service = OperationalTwinService(
+        audit_log=AuditLog(tmp_path / "twin-audit.jsonl"),
+        shared_data_sink=sink,
+    )
+    service = DeploymentRecommendationService(
+        operational_twin_service=twin_service,
+        audit_log=AuditLog(tmp_path / "deployment-audit.jsonl"),
+        shared_data_sink=sink,
+        repository=repository,
+    )
+
+    recommendation = service.recommend(
+        DeploymentRecommendationRequest(
+            mission_id="deployment-lifecycle-demo",
+            requester_id="commander-1",
+            team_id="platoon-lifecycle",
+            scope="platoon",
+            target_soldier_ids=["RGR-0001"],
+            mission_context="Deploy platoon to observe route with constrained comms and wet terrain.",
+            terrain="Wet wooded terrain with limited visibility.",
+            weather={"weather": "rain", "temperature_c": 6},
+            processed_observations=[
+                ArtifactInput(
+                    kind="system1_observation",
+                    content="System 1 observation: team recovered a missed comms relay after correction.",
+                )
+            ],
+        )
+    )
+    selected_option_id = recommendation.platoon_recommendation.recommended_option_id
+
+    approval = service.record_approval(
+        recommendation.deployment_recommendation_id,
+        DeploymentApprovalRequest(
+            decision="approved",
+            actor_id="commander-1",
+            selected_option_id=selected_option_id,
+            approved_posture="deploy_with_controls",
+            comment="Approved with commander controls and fatigue mitigation.",
+        ),
+    )
+
+    assert approval is not None
+    assert approval.status == "approved"
+    assert approval.decision.selected_option_id == selected_option_id
+    assert approval.lesson_learned is not None
+    approved = repository.get(recommendation.deployment_recommendation_id)
+    assert approved is not None
+    assert approved.status == "approved"
+    assert approved.decisions[0].decision == "approved"
+    assert any(item.status == "approved" for item in approved.options)
+
+    outcome = service.record_outcome(
+        recommendation.deployment_recommendation_id,
+        DeploymentOutcomeRequest(
+            observed_outcome_summary="Platoon completed the observation movement with no safety incident.",
+            commander_rating=4,
+            safety_incident=False,
+            near_miss=False,
+            mission_effectiveness_estimate=0.35,
+            recommendation_accepted=True,
+            recommendation_helpful=True,
+            aar_notes="Controls were useful; comms check before movement prevented repeat error.",
+            actor_id="commander-1",
+        ),
+    )
+
+    assert outcome is not None
+    assert outcome.status == "outcome_recorded"
+    assert outcome.lesson_learned.category == "deployment_recommendation_outcome"
+    stored = repository.get(recommendation.deployment_recommendation_id)
+    assert stored is not None
+    assert stored.status == "outcome_recorded"
+    assert len(stored.outcomes) == 1
+    assert len(stored.lessons_learned) == 2
+    assert sink.update_events[-2]["operation"] == "approve"
+    assert sink.update_events[-1]["entity_type"] == "deployment_recommendation_outcome"
+    assert sink.update_events[-1]["event_payload"]["outcome_id"] == outcome.outcome.outcome_id
+
+
+def test_deployment_recommendation_reject_and_escalate_lifecycle_states(tmp_path) -> None:
+    service = DeploymentRecommendationService(
+        operational_twin_service=OperationalTwinService(audit_log=AuditLog(tmp_path / "audit.jsonl")),
+        audit_log=AuditLog(tmp_path / "deployment-audit.jsonl"),
+    )
+    rejected = service.recommend(
+        DeploymentRecommendationRequest(
+            mission_id="deployment-reject-demo",
+            requester_id="commander-1",
+            team_id="platoon-reject",
+            mission_context="Hold until weather improves.",
+            processed_observations=[
+                ArtifactInput(kind="manual_note", content="Commander saw missing route confirmation.")
+            ],
+        )
+    )
+
+    rejection = service.record_approval(
+        rejected.deployment_recommendation_id,
+        DeploymentApprovalRequest(
+            decision="rejected",
+            actor_id="commander-1",
+            comment="Rejected because source evidence did not cover route confirmation.",
+        ),
+    )
+
+    assert rejection is not None
+    assert rejection.status == "rejected"
+    assert service.get(rejected.deployment_recommendation_id).status == "rejected"
+    with pytest.raises(ValueError, match="approved deployment recommendations"):
+        service.record_outcome(
+            rejected.deployment_recommendation_id,
+            DeploymentOutcomeRequest(
+                observed_outcome_summary="No deployment occurred.",
+                commander_rating=3,
+                mission_effectiveness_estimate=0.0,
+                aar_notes="No outcome should be captured for a rejected recommendation.",
+                actor_id="commander-1",
+            ),
+        )
+
+    escalated = service.recommend(
+        DeploymentRecommendationRequest(
+            mission_id="deployment-escalate-demo",
+            requester_id="commander-2",
+            team_id="platoon-escalate",
+            mission_context="Route requires command review before any movement.",
+            processed_observations=[
+                ArtifactInput(kind="manual_note", content="Evidence is stale and conflicting.")
+            ],
+        )
+    )
+    escalation = service.record_approval(
+        escalated.deployment_recommendation_id,
+        DeploymentApprovalRequest(
+            decision="escalated",
+            actor_id="commander-2",
+            comment="Escalated to higher review because evidence conflicts with current weather.",
+        ),
+    )
+
+    assert escalation is not None
+    assert escalation.status == "escalated"
+    assert escalation.lesson_learned is not None
+    assert service.get(escalated.deployment_recommendation_id).status == "escalated"
+
+
+def test_deployment_recommendation_api_lifecycle_round_trip() -> None:
+    recommendation = create_deployment_recommendation(
+        DeploymentRecommendationRequest(
+            mission_id="deployment-api-lifecycle-demo",
+            requester_id="commander-1",
+            team_id="platoon-api-lifecycle",
+            scope="platoon",
+            mission_context="Deploy platoon with fatigue controls and route confirmation.",
+            terrain="Narrow ridge with limited visibility.",
+            weather={"weather": "wind", "wind_speed": 15},
+            processed_observations=[
+                ArtifactInput(
+                    kind="system1_observation",
+                    content="System 1 observation: team missed one relay but recovered before action.",
+                )
+            ],
+        )
+    )
+
+    fetched = get_deployment_recommendation(recommendation.deployment_recommendation_id)
+    listed = list_mission_deployment_recommendations("deployment-api-lifecycle-demo")
+    selected_option_id = recommendation.platoon_recommendation.recommended_option_id
+    approval = record_deployment_recommendation_approval(
+        recommendation.deployment_recommendation_id,
+        DeploymentApprovalRequest(
+            decision="approved",
+            actor_id="commander-1",
+            selected_option_id=selected_option_id,
+            comment="Approved with required controls.",
+        ),
+    )
+    outcome = record_deployment_recommendation_outcome(
+        recommendation.deployment_recommendation_id,
+        DeploymentOutcomeRequest(
+            observed_outcome_summary="The platoon completed the deployment rehearsal with controls.",
+            commander_rating=4,
+            mission_effectiveness_estimate=0.25,
+            recommendation_accepted=True,
+            recommendation_helpful=True,
+            aar_notes="Approval and outcome were linked for AAR.",
+            actor_id="commander-1",
+        ),
+    )
+    stored = get_deployment_recommendation(recommendation.deployment_recommendation_id)
+
+    assert fetched.deployment_recommendation_id == recommendation.deployment_recommendation_id
+    assert listed[0].deployment_recommendation_id == recommendation.deployment_recommendation_id
+    assert approval.status == "approved"
+    assert outcome.status == "outcome_recorded"
+    assert stored.status == "outcome_recorded"
+    assert stored.outcomes[0].outcome_id == outcome.outcome.outcome_id
+    assert stored.lessons_learned[-1].category == "deployment_recommendation_outcome"
+
+
+def test_deployment_recommendation_repository_round_trips_serialized_payload(tmp_path) -> None:
+    service = DeploymentRecommendationService(
+        operational_twin_service=OperationalTwinService(audit_log=AuditLog(tmp_path / "audit.jsonl")),
+        audit_log=AuditLog(tmp_path / "deployment-audit.jsonl"),
+    )
+    payload = service.recommend(
+        DeploymentRecommendationRequest(
+            mission_id="deployment-serialization-demo",
+            requester_id="commander-1",
+            team_id="platoon-serialize",
+            mission_context="Deploy element with processed evidence only.",
+            processed_observations=[
+                ArtifactInput(kind="manual_note", content="Team identified terrain-support timing.")
+            ],
+        )
+    )
+
+    loaded = load_deployment_recommendation(dump_deployment_recommendation(payload))
+
+    assert loaded == payload
+    assert "CREATE TABLE IF NOT EXISTS system2_deployment_recommendations" in DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL
+    assert "payload jsonb NOT NULL" in DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL
+    assert "idx_system2_deployment_recommendations_mission_id" in DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL
+
+
 def test_operational_twin_repository_round_trips_serialized_payload(tmp_path) -> None:
     service = OperationalTwinService(audit_log=AuditLog(tmp_path / "audit.jsonl"))
     payload = service.run(
@@ -1333,6 +1695,7 @@ def test_infra_settings_redacts_connection_urls() -> None:
         "agent_repository": "postgres",
         "agent_state": "redis",
         "candidate_pool": "postgres",
+        "deployment_repository": "postgres",
         "operational_twin_repository": "postgres",
         "retrieval": "pgvector",
         "graph": "falkordb",
@@ -1357,6 +1720,7 @@ def test_infra_settings_default_to_local_backends() -> None:
     assert settings.agent_state_backend == "memory"
     assert settings.audit_backend == "file"
     assert settings.candidate_pool_backend == "local"
+    assert settings.deployment_repository_backend == "memory"
     assert settings.operational_twin_repository_backend == "memory"
     assert settings.retrieval_backend == "local"
     assert settings.graph_backend == "local"
@@ -1470,6 +1834,7 @@ def test_infra_settings_supports_graph_stack_env_shape() -> None:
     assert settings.agent_repository_backend == "postgres"
     assert settings.agent_state_backend == "redis"
     assert settings.candidate_pool_backend == "postgres"
+    assert settings.deployment_repository_backend == "postgres"
     assert settings.operational_twin_repository_backend == "postgres"
     assert settings.retrieval_backend == "pgvector"
     assert settings.graph_backend == "falkordb"
@@ -1584,10 +1949,24 @@ def test_operational_twin_schema_contains_lookup_indexes() -> None:
     assert "idx_system2_operational_twin_runs_updated_at" in OPERATIONAL_TWIN_RUNS_SCHEMA_SQL
 
 
+def test_deployment_recommendation_schema_contains_lookup_indexes() -> None:
+    assert "CREATE TABLE IF NOT EXISTS system2_deployment_recommendations" in DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL
+    assert "idx_system2_deployment_recommendations_mission_id" in DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL
+    assert "idx_system2_deployment_recommendations_team_id" in DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL
+    assert "idx_system2_deployment_recommendations_status" in DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL
+    assert "idx_system2_deployment_recommendations_source_twin" in DEPLOYMENT_RECOMMENDATIONS_SCHEMA_SQL
+
+
 def test_build_adaptation_repository_uses_memory_by_default() -> None:
     repository = build_adaptation_repository(InfraSettings.from_env({}))
 
     assert isinstance(repository, InMemoryAdaptationRepository)
+
+
+def test_build_deployment_repository_uses_memory_by_default() -> None:
+    repository = build_deployment_repository(InfraSettings.from_env({}))
+
+    assert isinstance(repository, InMemoryDeploymentRecommendationRepository)
 
 
 def test_build_operational_twin_repository_uses_memory_by_default() -> None:

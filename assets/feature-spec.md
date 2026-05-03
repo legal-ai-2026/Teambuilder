@@ -27,3 +27,29 @@ This dictionary is the operational contract for scoring, fairness evidence, and 
 | competencies | object[str,int] | 1-5 values | training system | role-specific competency weights | no | medium | None |
 
 Model adapters must reject feature bundles that lack this mapping or that route `protected_race` or `protected_gender` into a success estimator.
+
+## Deployment Recommendation Inputs
+
+The deployment recommendation lane is not a personnel success scorer. It wraps
+processed System 1 evidence and mission context into the operational twin, then
+returns advisory deployment posture and required controls.
+
+| Input | Type | Source | Usage | Notes |
+| --- | --- | --- | --- | --- |
+| mission_id | string | mission system | trace and source refs | canonical ID |
+| requester_id | string | frontend/BFF auth context | audit actor | must identify the requesting reviewer or service |
+| team_id | string | mission/unit projection | platoon recommendation identity | canonical ID |
+| scope | `individual`/`platoon` | caller | response shape and decision context | defaults to `platoon` |
+| target_soldier_ids | list[string] | mission/team projection | individual recommendation wrappers | no soldier scoring is performed here |
+| mission_context | string | System 1/shared mission context | operational twin mission artifact | required |
+| terrain | string/null | System 1/shared terrain context | operational twin terrain artifact | optional but recommended |
+| weather | object | weather/shared context | operational twin weather artifact and environment | optional |
+| readiness | object | readiness/training projection | operational twin sleep/readiness artifact | optional |
+| processed_observations | list[ArtifactInput] | System 1 processed outputs | operational twin evidence | raw audio/images are not accepted |
+| constraints | list[string] | commander/policy context | decision context and mission artifact metadata | advisory controls |
+
+Deployment response posture values are `deploy`, `deploy_with_controls`, `hold`,
+and `escalate_review`. All deployment recommendations remain advisory and
+human-gated unless the request explicitly sets `require_human_approval` to
+`false`. The persisted lifecycle is recommendation -> approve/reject/escalate
+decision -> outcome/AAR capture -> lesson draft.

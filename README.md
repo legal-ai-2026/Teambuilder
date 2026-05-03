@@ -1,9 +1,10 @@
 # System 2 - Cognitive Mission Adaptation Engine
 
-FastAPI service for turning live training evidence into cognitive state
-estimates and instructor-approved scenario adaptations. The roster and career
-scoring path still exists, but it is now the downstream talent lane; the primary
-loop is observe, estimate, recommend, approve, inject, and learn.
+FastAPI service for turning processed field evidence into cognitive state
+estimates, instructor-approved scenario adaptations, and human-gated
+individual/platoon deployment recommendations. The roster and career scoring
+path still exists, but it is now the downstream talent lane; the primary loop
+is observe, estimate, recommend, approve, inject or deploy, and learn.
 
 The service is operationally shaped and dependency-light. The adaptation layer
 uses deterministic evidence fusion, cognitive-state estimation, scenario
@@ -151,10 +152,15 @@ python scripts/smoke_infra.py --env-file .env.infra --migrate
 - `GET /v1/adaptations/{adaptation_id}` - fetches a stored adaptation.
 - `GET /v1/missions/{mission_id}/adaptations` - lists stored adaptations for a mission.
 - `POST /v1/adaptations/{adaptation_id}/approval` - records instructor approval or rejection for a proposed inject.
-- `POST /v1/operational-twin/runs` - ingests multimodal evidence into an operational twin, estimates latent state, and drafts three governed options.
+- `POST /v1/operational-twin/runs` - ingests processed artifacts into an operational twin, estimates latent state, and drafts three governed options.
 - `GET /v1/operational-twin/runs/{twin_run_id}` - fetches a stored operational twin run.
 - `POST /v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` - records approve/reject/escalate decisions and emits lessons learned.
 - `POST /v1/operational-twin/runs/{twin_run_id}/outcome` - captures selected-option outcome, rating, safety incident flag, AAR notes, and a draft lesson.
+- `POST /v1/deployment-recommendations` - recommends individual or platoon deployment posture from processed System 1 evidence, mission context, terrain, weather, and readiness.
+- `GET /v1/deployment-recommendations/{deployment_recommendation_id}` - fetches a stored deployment recommendation lifecycle record.
+- `GET /v1/missions/{mission_id}/deployment-recommendations` - lists stored deployment recommendations for a mission.
+- `POST /v1/deployment-recommendations/{deployment_recommendation_id}/approval` - records approve/reject/escalate decisions for deployment recommendations.
+- `POST /v1/deployment-recommendations/{deployment_recommendation_id}/outcome` - captures deployment outcome/AAR signals and emits a draft lesson.
 - `POST /v1/agent-runs` - runs the agentic recommendation workflow and returns an approval-ready run.
 - `GET /v1/agent-runs/{run_id}` - fetches an agent run by ID.
 - `POST /v1/agent-runs/{run_id}/approval` - records an authorized approve/reject decision.
@@ -246,6 +252,46 @@ curl -X POST http://127.0.0.1:8000/v1/operational-twin/runs \
 The response returns normalized evidence, one provisional `state_estimate`, one
 `evidence_bundle`, and exactly three `scenario_options`. All options remain
 `draft` until the decision endpoint records a named human decision.
+
+## Deployment Recommendation Example
+
+Use `/v1/deployment-recommendations` when the frontend or another service needs
+a first-class deployment recommendation rather than a raw operational twin run.
+System 2 still does not run STT/OCR; it expects processed observations and
+context from System 1 or shared stores.
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/deployment-recommendations \
+  -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
+  -d '{
+    "mission_id": "deployment-demo",
+    "requester_id": "commander-1",
+    "team_id": "platoon-alpha",
+    "scope": "platoon",
+    "target_soldier_ids": ["RGR-0001", "RGR-0002"],
+    "mission_context": "Move platoon to observation position with time-sensitive support coordination.",
+    "terrain": "Rough wooded draw with constrained visibility.",
+    "weather": {"condition": "cold wind", "temperature_c": 3, "wind_speed": 18},
+    "readiness": {"sleep_hours": 4.2, "hydration": 0.62},
+    "processed_observations": [
+      {
+        "kind": "system1_observation",
+        "content": "System 1 observation: missed two comms acknowledgements; leader recovered after terrain-support timing cue.",
+        "metadata": {"observation_id": "s1-obs-001"}
+      }
+    ],
+    "constraints": ["no avoidable fatigue load"],
+    "require_human_approval": true
+  }'
+```
+
+The response includes `deployment_recommendation_id`, `source_twin_run_id`,
+platoon and individual recommendations, three option recommendations, required
+controls, source references, agent trace, decision-quality, utility, and
+reliance guidance. Status is `pending_approval` when human approval is
+required. Approval and outcome endpoints preserve the full lifecycle:
+recommendation -> named human decision -> observed outcome/AAR -> lesson draft.
 
 ## Roster Example
 

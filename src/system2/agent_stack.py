@@ -7,6 +7,11 @@ from .agent_store import AgentRunRepository, InMemoryAgentRunRepository
 from .audit import AuditLog, AuditSink, PostgresAuditLog
 from .candidate_pool import CandidatePoolResolver, InMemoryCandidatePoolResolver, PostgresCandidatePoolResolver
 from .config import InfraSettings
+from .deployment import (
+    DeploymentRecommendationRepository,
+    InMemoryDeploymentRecommendationRepository,
+    PostgresDeploymentRecommendationRepository,
+)
 from .graph import FalkorDBGraphContextProvider, LocalGraphContextProvider
 from .operational_twin import (
     InMemoryOperationalTwinRepository,
@@ -65,6 +70,12 @@ def build_operational_twin_repository(settings: InfraSettings) -> OperationalTwi
     if settings.operational_twin_repository_backend == "postgres" and settings.database_url:
         return PostgresOperationalTwinRepository(settings.database_url)
     return InMemoryOperationalTwinRepository()
+
+
+def build_deployment_repository(settings: InfraSettings) -> DeploymentRecommendationRepository:
+    if settings.deployment_repository_backend == "postgres" and settings.database_url:
+        return PostgresDeploymentRecommendationRepository(settings.database_url)
+    return InMemoryDeploymentRecommendationRepository()
 
 
 def build_selection_service(settings: InfraSettings | None = None) -> SelectionService:

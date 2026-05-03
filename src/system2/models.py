@@ -495,6 +495,16 @@ ScenarioOptionType = Literal["training_inject", "rehearsal_variant", "mission_co
 ScenarioCriticStatus = Literal["pass", "modify", "escalate", "reject"]
 ScenarioOptionStatus = Literal["draft", "approved", "rejected", "escalated"]
 TwinDecisionValue = Literal["approved", "rejected", "escalated"]
+DeploymentScope = Literal["individual", "platoon"]
+DeploymentPosture = Literal["deploy", "deploy_with_controls", "hold", "escalate_review"]
+DeploymentRecommendationStatus = Literal[
+    "pending_approval",
+    "approved",
+    "rejected",
+    "escalated",
+    "completed",
+    "outcome_recorded",
+]
 
 
 class ControlProperties(StrictBaseModel):
@@ -803,6 +813,154 @@ class OperationalTwinOutcomeResponse(StrictBaseModel):
     outcome: OperationalTwinOutcome
     lesson_learned: LessonLearned
     recorded_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class DeploymentRecommendationRequest(StrictBaseModel):
+    mission_id: str = Field(min_length=1)
+    requester_id: str = Field(min_length=1)
+    team_id: str = Field(min_length=1)
+    scope: DeploymentScope = "platoon"
+    target_soldier_ids: list[str] = Field(default_factory=list)
+    mission_context: str = Field(min_length=1, max_length=12000)
+    terrain: str | None = Field(default=None, max_length=4000)
+    weather: dict[str, Any] = Field(default_factory=dict)
+    processed_observations: list[ArtifactInput] = Field(default_factory=list)
+    readiness: dict[str, Any] = Field(default_factory=dict)
+    constraints: list[str] = Field(default_factory=list)
+    require_human_approval: bool = True
+    decision_context: DecisionContext | None = None
+
+
+class DeploymentApprovalRequest(StrictBaseModel):
+    decision: TwinDecisionValue
+    actor_id: str = Field(min_length=1)
+    comment: str = Field(min_length=1, max_length=4000)
+    selected_option_id: str | None = Field(default=None, min_length=1)
+    approved_posture: DeploymentPosture | None = None
+
+
+class DeploymentRecommendationDecision(StrictBaseModel):
+    decision_id: str
+    deployment_recommendation_id: str
+    source_twin_run_id: str
+    selected_option_id: str | None = None
+    actor_id: str
+    decision: TwinDecisionValue
+    approved_posture: DeploymentPosture | None = None
+    comment: str
+    timestamp_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class DeploymentApprovalResponse(StrictBaseModel):
+    deployment_recommendation_id: str
+    status: Literal["approved", "rejected", "escalated"]
+    decision: DeploymentRecommendationDecision
+    lesson_learned: LessonLearned | None = None
+    decided_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class DeploymentOutcomeRequest(StrictBaseModel):
+    observed_outcome_summary: str = Field(min_length=1, max_length=4000)
+    commander_rating: int = Field(ge=1, le=5)
+    safety_incident: bool = False
+    near_miss: bool = False
+    mission_effectiveness_estimate: float = Field(ge=-1, le=1)
+    recommendation_accepted: bool = True
+    recommendation_helpful: bool = True
+    selected_option_id: str | None = Field(default=None, min_length=1)
+    overridden_posture: DeploymentPosture | None = None
+    missed_factor: str | None = Field(default=None, max_length=4000)
+    should_have_escalated: bool = False
+    aar_notes: str = Field(min_length=1, max_length=8000)
+    actor_id: str = Field(min_length=1)
+
+
+class DeploymentOutcome(StrictBaseModel):
+    outcome_id: str
+    deployment_recommendation_id: str
+    source_twin_run_id: str
+    selected_option_id: str | None = None
+    observed_outcome_summary: str
+    commander_rating: int = Field(ge=1, le=5)
+    safety_incident: bool = False
+    near_miss: bool = False
+    mission_effectiveness_estimate: float = Field(ge=-1, le=1)
+    recommendation_accepted: bool = True
+    recommendation_helpful: bool = True
+    overridden_posture: DeploymentPosture | None = None
+    missed_factor: str | None = None
+    should_have_escalated: bool = False
+    aar_notes: str
+    actor_id: str
+    recorded_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    controls: list[str] = Field(default_factory=list)
+
+
+class DeploymentOutcomeResponse(StrictBaseModel):
+    deployment_recommendation_id: str
+    status: Literal["outcome_recorded"]
+    outcome: DeploymentOutcome
+    lesson_learned: LessonLearned
+    recorded_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class DeploymentOptionRecommendation(StrictBaseModel):
+    scenario_option_id: str
+    title: str
+    option_type: ScenarioOptionType
+    recommendation: str
+    risk_score: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    critic_status: ScenarioCriticStatus
+    critic_reasons: list[str] = Field(default_factory=list)
+    status: ScenarioOptionStatus = "draft"
+    decision_quality: DecisionQualityAssessment
+    utility_estimate: DecisionUtilityEstimate
+    reliance_guidance: RelianceGuidance
+
+
+class IndividualDeploymentRecommendation(StrictBaseModel):
+    soldier_id: str
+    posture: DeploymentPosture
+    readiness_score: float = Field(ge=0, le=1)
+    risk_level: Literal["low", "medium", "high"]
+    recommended_role: str | None = None
+    rationale: str
+    required_controls: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class PlatoonDeploymentRecommendation(StrictBaseModel):
+    team_id: str
+    posture: DeploymentPosture
+    readiness_score: float = Field(ge=0, le=1)
+    risk_level: Literal["low", "medium", "high"]
+    recommended_option_id: str | None = None
+    rationale: str
+    required_controls: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class DeploymentRecommendationResponse(StrictBaseModel):
+    deployment_recommendation_id: str
+    mission_id: str
+    team_id: str
+    scope: DeploymentScope
+    status: DeploymentRecommendationStatus
+    source_twin_run_id: str
+    platoon_recommendation: PlatoonDeploymentRecommendation
+    individual_recommendations: list[IndividualDeploymentRecommendation] = Field(default_factory=list)
+    options: list[DeploymentOptionRecommendation]
+    decisions: list[DeploymentRecommendationDecision] = Field(default_factory=list)
+    outcomes: list[DeploymentOutcome] = Field(default_factory=list)
+    lessons_learned: list[LessonLearned] = Field(default_factory=list)
+    agent_trace: list[AgentStageTrace] = Field(default_factory=list)
+    source_refs: list[SourceReference] = Field(default_factory=list)
+    decision_quality: DecisionQualityAssessment
+    utility_estimate: DecisionUtilityEstimate
+    reliance_guidance: RelianceGuidance
+    created_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class AgentRun(StrictBaseModel):

@@ -31,7 +31,6 @@ class OpenAIJsonAgentClient:
                 {"role": "user", "content": user},
             ],
             "response_format": {"type": "json_object"},
-            "temperature": 0.2,
         }
         request = urllib.request.Request(
             self._url("/chat/completions"),

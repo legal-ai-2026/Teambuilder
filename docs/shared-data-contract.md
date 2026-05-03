@@ -215,6 +215,8 @@ System 2 can:
 
 - estimate cognitive and team state from live training evidence
 - recommend scenario injects for instructor approval
+- recommend individual or platoon deployment posture from processed System 1
+  evidence, mission context, terrain, weather, and readiness
 - score soldiers against mission role slots
 - produce a primary roster
 - produce a second-choice roster
@@ -248,6 +250,11 @@ System 2 must not:
 | `GET /v1/operational-twin/runs/{twin_run_id}` | Fetch operational twin run with evidence bundle and draft/decided options | no |
 | `POST /v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` | Record approve/reject/escalate decision and lesson draft | yes |
 | `POST /v1/operational-twin/runs/{twin_run_id}/outcome` | Capture selected-option outcome, rating, safety incident flag, and AAR notes | yes |
+| `POST /v1/deployment-recommendations` | Recommend individual/platoon deployment posture from processed evidence | yes |
+| `GET /v1/deployment-recommendations/{deployment_recommendation_id}` | Fetch stored deployment recommendation lifecycle | no |
+| `GET /v1/missions/{mission_id}/deployment-recommendations` | List deployment recommendation history for a mission | no |
+| `POST /v1/deployment-recommendations/{deployment_recommendation_id}/approval` | Record approve/reject/escalate deployment decision | yes |
+| `POST /v1/deployment-recommendations/{deployment_recommendation_id}/outcome` | Capture deployment outcome, AAR signals, and lesson draft | yes |
 | `POST /v1/score` | Direct roster scoring | audit only |
 | `POST /v1/agent-runs` | Agentic recommendation workflow | yes |
 | `GET /v1/agent-runs/{run_id}` | Fetch run and recommendation | no |
@@ -327,6 +334,50 @@ IDs, decision IDs, outcome IDs, and lesson IDs when approved options or
 outcomes emit lesson drafts. The full run response also carries `agent_trace`,
 which records the provider, model, status, input/output hashes, duration, and
 fallback/error details for perception, state, scenario, and critic agent stages.
+
+Current implemented deployment recommendation input:
+
+```json
+{
+  "mission_id": "deployment-demo",
+  "requester_id": "commander-1",
+  "team_id": "platoon-alpha",
+  "scope": "platoon",
+  "target_soldier_ids": ["RGR-0001", "RGR-0002"],
+  "mission_context": "Move platoon to observation position with time-sensitive support coordination.",
+  "terrain": "Rough wooded draw with constrained visibility.",
+  "weather": {"condition": "cold wind", "temperature_c": 3, "wind_speed": 18},
+  "readiness": {"sleep_hours": 4.2, "hydration": 0.62},
+  "processed_observations": [
+    {
+      "kind": "system1_observation",
+      "content": "System 1 observation: missed two comms acknowledgements; leader recovered after terrain-support timing cue.",
+      "metadata": {"observation_id": "s1-obs-001"}
+    }
+  ],
+  "constraints": ["no avoidable fatigue load"],
+  "require_human_approval": true
+}
+```
+
+Deployment recommendation output contains:
+
+- `deployment_recommendation_id`
+- `source_twin_run_id`
+- platoon posture and required controls
+- individual posture wrappers for requested target soldiers
+- three governed option recommendations from the source operational twin
+- decision history, outcome history, and lesson drafts
+- source refs, agent trace, decision quality, utility, and reliance guidance
+
+Deployment recommendation runs append `entity_update_events` with entity type
+`deployment_recommendation` and operation `recommend`. The payload carries the
+mission/team IDs, scope, source twin run ID, platoon recommendation, individual
+soldier IDs, option IDs, decision-quality fields, reliance guidance, and source
+refs. Approval and outcome endpoints append lifecycle events with
+`approve`/`reject`/`escalate` and `observe_outcome` operations. The events are
+advisory; final deployment action belongs to the appropriate human command or
+System 3 workflow.
 
 Current implemented score input:
 
@@ -515,6 +566,9 @@ Other systems can rely on System 2 to produce:
 - `adaptation_id` for developmental scenario-adaptation runs
 - cognitive/team state snapshots with evidence references
 - scenario inject recommendations with risk, confidence, and doctrine rationale
+- `deployment_recommendation_id` and `source_twin_run_id` for deployment
+  recommendation review
+- individual and platoon deployment posture, required controls, and source refs
 - a durable `run_id`
 - recommendation status
 - selected roster and second-choice roster
@@ -771,6 +825,9 @@ facts, approvals, and drift snapshots.
 |---|---|---|---|---|---|
 | Cognitive adaptation | `POST /v1/adaptations` | `system2_adaptations`, `system2_audit_log`, `entity_update_events` | reads context chunks | none now | none |
 | Adaptation approval | `POST /v1/adaptations/{adaptation_id}/approval` | `system2_audit_log`, `entity_update_events` | none | optional scenario facts after approval | none |
+| Operational twin run | `POST /v1/operational-twin/runs` | operational twin repository, `system2_audit_log`, `entity_update_events` | none | none | none |
+| Deployment recommendation | `POST /v1/deployment-recommendations` | source twin run, deployment repository, `system2_audit_log`, `entity_update_events` | none | none | none |
+| Deployment approval/outcome | deployment approval/outcome routes | deployment repository, `system2_audit_log`, `entity_update_events` | none | optional lesson/outcome facts after review | none |
 | Direct score | `POST /v1/score` | `system2_audit_log`, `decision_snapshots` | none | none | none |
 | Agent run create | `POST /v1/agent-runs` | `system2_agent_runs`, `system2_audit_log`, `decision_snapshots` | none | none | `system2:agent-run:{run_id}:status`, lock |
 | Agent approval | `POST /v1/agent-runs/{run_id}/approval` | `system2_agent_runs`, `system2_audit_log`, `entity_update_events` | none | optional assignment facts after approval | status update |
@@ -797,6 +854,40 @@ Direct scoring must not mutate:
 - `soldiers_current`
 - `missions_current`
 - `role_slots_current`
+- `training_observations_current`
+- `deployment_outcomes_current`
+
+### Deployment Recommendation Create
+
+When System 2 creates a deployment recommendation:
+
+1. It validates `DeploymentRecommendationRequest`.
+2. It converts mission context, terrain, weather, readiness, constraints, and
+   processed observations into a mission-mode `OperationalTwinRequest`.
+3. It runs the operational twin and stores that source twin run through the
+   configured repository.
+4. It selects the best non-rejected option by utility, confidence, and risk.
+5. It derives platoon and individual posture plus required controls.
+6. It appends a hash-chained audit record:
+   - `deployment_recommendation_created`
+7. It stores the recommendation lifecycle in `system2_deployment_recommendations`
+   when Postgres persistence is enabled.
+8. It appends an `entity_update_events` row with:
+   - `entity_type = "deployment_recommendation"`
+   - `operation = "recommend"`
+   - `source_twin_run_id`
+9. Later approval and outcome endpoints append:
+   - `deployment_recommendation_decision_recorded`
+   - `deployment_recommendation_outcome_recorded`
+   - `entity_type = "deployment_recommendation"` for decisions
+   - `entity_type = "deployment_recommendation_outcome"` for outcomes
+   - platoon recommendation, individual soldier IDs, option IDs, source refs,
+     decision quality, utility, and reliance guidance
+
+Deployment recommendations must not mutate:
+
+- `soldiers_current`
+- `missions_current`
 - `training_observations_current`
 - `deployment_outcomes_current`
 
@@ -965,6 +1056,7 @@ The current System 2 implementation already writes:
 - `entity_update_events` for kill-switch changes
 - `entity_update_events` for cognitive adaptation recommendations and
   scenario-inject approval/rejection
+- `entity_update_events` for deployment recommendations
 - FalkorDB facts through `/v1/graph/facts`
 - Redis status and lock keys
 - recommendation `trace.source_refs` and `trace.input_source_hashes`
@@ -1278,6 +1370,18 @@ candidates and roles from `candidate_pools_current`, `soldiers_current`, and
 `role_slots_current`; missing pools fail the request. Training, context, and
 graph enrichment still depends on the corresponding shared projections,
 pgvector chunks, and FalkorDB facts being populated.
+
+Preferred deployment flow:
+
+1. User selects a mission by `mission_id`.
+2. Frontend or BFF loads processed System 1 observations, mission context,
+   terrain, weather, readiness, and target soldier IDs from shared stores.
+3. Frontend calls `POST /v1/deployment-recommendations`.
+4. System 2 creates a mission-mode operational twin run, derives deployment
+   posture, and writes a `deployment_recommendation` update event.
+5. Frontend displays posture, controls, options, trace, and source refs.
+6. Any final deployment decision is recorded by the owning command workflow or
+   downstream System 3 process.
 
 ## Implementation Checklist For All Apps
 

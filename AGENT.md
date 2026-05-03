@@ -1,14 +1,17 @@
-# AGENT.md - Talent / Soldier Selection Engine
+# AGENT.md - Cognitive Mission Adaptation and Deployment Engine
 
 This file is the entry point for AI coding agents working in this repository.
 Read it before making changes and keep it aligned with the actual service.
 
 ## What This Project Is
 
-**Spire Talent Engine** is an operational backend service that ranks soldiers
-for mission roster slots and returns uncertainty, second-choice options,
-fairness audit results, trace metadata, and a career forecast for the strongest
-selected candidate. It is System 2 in the Spire flywheel.
+**Spire System 2** is an operational backend service for cognitive mission
+adaptation, deployment recommendation, and downstream roster scoring. It
+estimates cognitive/team state from processed field evidence, drafts
+instructor-approved scenario injects, recommends individual or platoon
+deployment posture from processed System 1 outputs plus mission context,
+terrain, weather, and readiness, and keeps the existing talent scoring lane for
+mission roster slots.
 
 The service is advisory. It produces recommendations for commanders and career
 managers; it does not publish orders, replace command judgment, or act as a
@@ -19,6 +22,9 @@ system of record.
 - Not a hiring, accession, separation, or disciplinary tool.
 - Not a free-form Q&A or chat interface.
 - Not a frontend application.
+- Not a speech-to-text, OCR, raw media extraction, or KG-ingest service. System
+  1 owns those steps; System 2 consumes the processed outputs.
+- Not an autonomous deployment authority.
 - Not a personnel-policy authority. Do not make doctrine claims without a
   controlling source.
 
@@ -38,6 +44,8 @@ contract:
 - fairness audit
 - narrative explanation
 - five-year career forecast
+- operational twin agent loop
+- individual/platoon deployment recommendation wrapper
 - decision-quality, utility, and reliance guidance
 - append-only hash-chained audit log
 - API kill switch
@@ -90,6 +98,7 @@ The tests must cover:
 - group fairness metrics
 - high-disagreement low-confidence behavior
 - audit-log hash-chain validation
+- operational twin and deployment recommendation contracts
 
 ## Coding Conventions
 
@@ -119,6 +128,29 @@ The tests must cover:
 10. The response returns recommendations, audit, career forecast, and trace
    metadata.
 
+## Deployment Recommendation Pipeline
+
+1. `POST /v1/deployment-recommendations` receives a typed
+   `DeploymentRecommendationRequest`.
+2. The request must contain mission context and may include processed System 1
+   observations, transcripts, OCR text, terrain, weather, readiness signals,
+   constraints, and target soldier IDs.
+3. The service wraps those inputs into an `OperationalTwinRequest` in `mission`
+   mode.
+4. The operational twin normalizes evidence, estimates latent state, drafts
+   three governed options, and applies critic review.
+5. `deployment.py` converts that twin run into platoon and individual
+   deployment posture, required controls, option recommendations, source refs,
+   and decision-quality outputs.
+6. The response remains human-gated unless the caller explicitly disables
+   `require_human_approval`.
+7. Deployment recommendations are persisted and can be fetched by ID or mission.
+8. Approval records approve/reject/escalate decisions with a named human actor.
+9. Outcome capture records AAR signals, near misses, safety incidents,
+   recommendation usefulness, missed factors, and lesson drafts.
+10. Shared update events record recommendation, decision, and outcome lifecycle
+    transitions for cross-system consumption.
+
 Confidence policy:
 
 - `abs(p_tabpfn - p_bayes) < 0.10`: high confidence.
@@ -142,6 +174,10 @@ Confidence policy:
 - Every consequential response carries decision-quality, utility, and reliance
   guidance. This guidance is advisory and never auto-approves action.
 - Every response carries trace metadata.
+- Deployment recommendations must be based on processed evidence and mission
+  context, not raw audio/images or unreviewed extraction.
+- Deployment recommendations must preserve required controls and named human
+  accountability.
 - The kill switch must block all scoring routes.
 - Admin routes must be protected by the deployment gateway or service mesh.
 - Audit records must not include protected attributes or clear unit/MOS values.

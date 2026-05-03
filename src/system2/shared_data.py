@@ -14,6 +14,12 @@ from .models import (
     CognitiveAdaptationRequest,
     CognitiveAdaptationResponse,
     ContextChunkInput,
+    DeploymentApprovalRequest,
+    DeploymentApprovalResponse,
+    DeploymentOutcomeRequest,
+    DeploymentOutcomeResponse,
+    DeploymentRecommendationRequest,
+    DeploymentRecommendationResponse,
     GraphFactInput,
     OperationalTwinOutcomeRequest,
     OperationalTwinOutcomeResponse,
@@ -672,6 +678,134 @@ def build_operational_twin_outcome_update_event(
         "operation": "observe_outcome",
         "event_payload": payload,
         "previous_source_hash": None,
+        "new_source_hash": canonical_hash(response.model_dump(mode="json")),
+        "observed_at": response.recorded_at_utc,
+        "recorded_at": datetime.now(UTC),
+        "actor_id": request.actor_id,
+        "reason": request.aar_notes,
+    }
+
+
+def build_deployment_recommendation_update_event(
+    request: DeploymentRecommendationRequest,
+    response: DeploymentRecommendationResponse,
+) -> dict[str, Any]:
+    payload = {
+        "deployment_recommendation_id": response.deployment_recommendation_id,
+        "mission_id": response.mission_id,
+        "team_id": response.team_id,
+        "scope": response.scope,
+        "status": response.status,
+        "source_twin_run_id": response.source_twin_run_id,
+        "platoon_recommendation": response.platoon_recommendation.model_dump(mode="json"),
+        "individual_recommendation_ids": [
+            item.soldier_id for item in response.individual_recommendations
+        ],
+        "option_ids": [item.scenario_option_id for item in response.options],
+        "decision_quality": response.decision_quality.model_dump(mode="json"),
+        "utility_estimate": response.utility_estimate.model_dump(mode="json"),
+        "reliance_guidance": response.reliance_guidance.model_dump(mode="json"),
+        "source_refs": [ref.model_dump(mode="json") for ref in response.source_refs],
+    }
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "deployment_recommendation",
+        "entity_id": response.deployment_recommendation_id,
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": response.deployment_recommendation_id,
+        "operation": "recommend",
+        "event_payload": payload,
+        "previous_source_hash": None,
+        "new_source_hash": canonical_hash(response.model_dump(mode="json")),
+        "observed_at": response.created_at_utc,
+        "recorded_at": datetime.now(UTC),
+        "actor_id": request.requester_id,
+        "reason": "System 2 generated a human-gated deployment recommendation from processed evidence.",
+    }
+
+
+def build_deployment_approval_update_event(
+    recommendation: DeploymentRecommendationResponse,
+    request: DeploymentApprovalRequest,
+    response: DeploymentApprovalResponse,
+) -> dict[str, Any]:
+    payload = {
+        "deployment_recommendation_id": recommendation.deployment_recommendation_id,
+        "mission_id": recommendation.mission_id,
+        "team_id": recommendation.team_id,
+        "scope": recommendation.scope,
+        "status": response.status,
+        "source_twin_run_id": recommendation.source_twin_run_id,
+        "decision_id": response.decision.decision_id,
+        "decision": request.decision,
+        "selected_option_id": response.decision.selected_option_id,
+        "approved_posture": response.decision.approved_posture,
+        "lesson_id": (
+            response.lesson_learned.lesson_id
+            if response.lesson_learned is not None
+            else None
+        ),
+        "decision_quality": recommendation.decision_quality.model_dump(mode="json"),
+        "utility_estimate": recommendation.utility_estimate.model_dump(mode="json"),
+        "reliance_guidance": recommendation.reliance_guidance.model_dump(mode="json"),
+    }
+    operation = {
+        "approved": "approve",
+        "rejected": "reject",
+        "escalated": "escalate",
+    }[request.decision]
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "deployment_recommendation",
+        "entity_id": recommendation.deployment_recommendation_id,
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": recommendation.deployment_recommendation_id,
+        "operation": operation,
+        "event_payload": payload,
+        "previous_source_hash": canonical_hash(recommendation.model_dump(mode="json")),
+        "new_source_hash": canonical_hash(response.model_dump(mode="json")),
+        "observed_at": response.decided_at_utc,
+        "recorded_at": datetime.now(UTC),
+        "actor_id": request.actor_id,
+        "reason": request.comment,
+    }
+
+
+def build_deployment_outcome_update_event(
+    recommendation: DeploymentRecommendationResponse,
+    request: DeploymentOutcomeRequest,
+    response: DeploymentOutcomeResponse,
+) -> dict[str, Any]:
+    payload = {
+        "deployment_recommendation_id": recommendation.deployment_recommendation_id,
+        "mission_id": recommendation.mission_id,
+        "team_id": recommendation.team_id,
+        "scope": recommendation.scope,
+        "status": response.status,
+        "source_twin_run_id": recommendation.source_twin_run_id,
+        "selected_option_id": response.outcome.selected_option_id,
+        "outcome_id": response.outcome.outcome_id,
+        "lesson_id": response.lesson_learned.lesson_id,
+        "commander_rating": request.commander_rating,
+        "safety_incident": request.safety_incident,
+        "near_miss": request.near_miss,
+        "mission_effectiveness_estimate": request.mission_effectiveness_estimate,
+        "recommendation_accepted": request.recommendation_accepted,
+        "recommendation_helpful": request.recommendation_helpful,
+        "should_have_escalated": request.should_have_escalated,
+        "decision_quality": recommendation.decision_quality.model_dump(mode="json"),
+        "utility_estimate": recommendation.utility_estimate.model_dump(mode="json"),
+        "reliance_guidance": recommendation.reliance_guidance.model_dump(mode="json"),
+    }
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "deployment_recommendation_outcome",
+        "entity_id": response.outcome.outcome_id,
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": recommendation.deployment_recommendation_id,
+        "operation": "observe_outcome",
+        "event_payload": payload,
+        "previous_source_hash": canonical_hash(recommendation.model_dump(mode="json")),
         "new_source_hash": canonical_hash(response.model_dump(mode="json")),
         "observed_at": response.recorded_at_utc,
         "recorded_at": datetime.now(UTC),

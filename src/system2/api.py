@@ -7,12 +7,14 @@ from . import __version__
 from .agent_stack import (
     build_adaptation_repository,
     build_agent_orchestrator,
+    build_deployment_repository,
     build_operational_twin_repository,
     build_selection_service,
 )
 from .agent_tools import ContextualScoringInput, contextual_scoring_input
 from .config import InfraSettings
 from .cognitive import CognitiveAdaptationService
+from .deployment import DeploymentRecommendationService
 from .models import (
     AgentApprovalRequest,
     AgentRun,
@@ -21,6 +23,12 @@ from .models import (
     CognitiveAdaptationResponse,
     ContextIngestRequest,
     ContextIngestResult,
+    DeploymentApprovalRequest,
+    DeploymentApprovalResponse,
+    DeploymentOutcomeRequest,
+    DeploymentOutcomeResponse,
+    DeploymentRecommendationRequest,
+    DeploymentRecommendationResponse,
     GraphIngestRequest,
     GraphIngestResult,
     OperationalTwinOutcomeRequest,
@@ -94,6 +102,12 @@ operational_twin_service = OperationalTwinService(
     ),
     llm_model=api_settings.openai_model,
     agent_max_retries=api_settings.agentic_max_retries,
+)
+deployment_service = DeploymentRecommendationService(
+    operational_twin_service=operational_twin_service,
+    audit_log=service.audit_log,
+    shared_data_sink=agent_orchestrator.shared_data_sink,
+    repository=build_deployment_repository(agent_orchestrator.settings),
 )
 
 
@@ -246,6 +260,79 @@ def record_operational_twin_outcome(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if outcome is None:
         raise HTTPException(status_code=404, detail="operational twin run not found")
+    return outcome
+
+
+@app.post("/v1/deployment-recommendations", response_model=DeploymentRecommendationResponse)
+def create_deployment_recommendation(
+    request: DeploymentRecommendationRequest,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> DeploymentRecommendationResponse:
+    try:
+        return deployment_service.recommend(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get(
+    "/v1/deployment-recommendations/{deployment_recommendation_id}",
+    response_model=DeploymentRecommendationResponse,
+)
+def get_deployment_recommendation(
+    deployment_recommendation_id: str,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> DeploymentRecommendationResponse:
+    recommendation = deployment_service.get(deployment_recommendation_id)
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="deployment recommendation not found")
+    return recommendation
+
+
+@app.get(
+    "/v1/missions/{mission_id}/deployment-recommendations",
+    response_model=list[DeploymentRecommendationResponse],
+)
+def list_mission_deployment_recommendations(
+    mission_id: str,
+    limit: int = 50,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> list[DeploymentRecommendationResponse]:
+    return deployment_service.list_by_mission(mission_id, limit=limit)
+
+
+@app.post(
+    "/v1/deployment-recommendations/{deployment_recommendation_id}/approval",
+    response_model=DeploymentApprovalResponse,
+)
+def record_deployment_recommendation_approval(
+    deployment_recommendation_id: str,
+    request: DeploymentApprovalRequest,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> DeploymentApprovalResponse:
+    try:
+        approval = deployment_service.record_approval(deployment_recommendation_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if approval is None:
+        raise HTTPException(status_code=404, detail="deployment recommendation not found")
+    return approval
+
+
+@app.post(
+    "/v1/deployment-recommendations/{deployment_recommendation_id}/outcome",
+    response_model=DeploymentOutcomeResponse,
+)
+def record_deployment_recommendation_outcome(
+    deployment_recommendation_id: str,
+    request: DeploymentOutcomeRequest,
+    _auth: None = Depends(api_key_guard.require_api_key),
+) -> DeploymentOutcomeResponse:
+    try:
+        outcome = deployment_service.record_outcome(deployment_recommendation_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="deployment recommendation not found")
     return outcome
 
 

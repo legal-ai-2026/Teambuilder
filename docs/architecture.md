@@ -3,9 +3,10 @@
 ## Purpose
 
 System 2 is an operational FastAPI service for developmental training
-adaptation. Given live field evidence, it estimates cognitive and team state,
-recommends instructor-approved scenario injects, and records traceable
-provenance for later AAR and drift review.
+adaptation and deployment recommendation. Given processed field evidence, it
+estimates cognitive and team state, recommends instructor-approved scenario
+injects, recommends individual or platoon deployment posture, and records
+traceable provenance for later AAR and drift review.
 
 The existing roster scorer remains available as a downstream talent lane. Given
 a mission, roles, and a candidate pool, it returns a primary roster,
@@ -109,6 +110,39 @@ deterministic runtime. Each run includes `agent_trace` entries that identify
 the provider, model, stage status, input/output hashes, duration, and fallback
 reason when one occurred.
 
+## Deployment Recommendation Flow
+
+```text
+Processed System 1 outputs + mission context + terrain/weather/readiness
+    |
+    | POST /v1/deployment-recommendations
+    v
+Deployment request validation
+    |
+    v
+Mission-mode operational twin run
+    |
+    v
+State estimate + three governed deployment/COA options
+    |
+    v
+Posture selection: deploy / deploy_with_controls / hold / escalate_review
+    |
+    v
+Platoon and individual recommendation wrappers
+    |
+    v
+Required controls + source refs + decision-quality outputs
+    |
+    v
+Human approval gate + deployment_recommendation update event
+```
+
+This route is the product-facing deployment lane. It does not add STT, OCR, raw
+media extraction, or independent soldier scoring. It packages processed
+evidence and mission context into the operational twin, then converts the twin
+result into a stable recommendation contract for platoon and individual review.
+
 ## Roster Runtime Flow
 
 ```text
@@ -157,6 +191,7 @@ The active package is `src/system2/`.
 | `adaptation_store.py` | In-memory and Postgres repositories for adaptation lookup and mission history |
 | `cognitive.py` | Evidence fusion, cognitive state estimation, scenario direction, safety/doctrine gating, and adaptation approval |
 | `operational_twin.py` | Backend operational twin loop for multimodal evidence, state estimates, governed options, decisions, and lessons |
+| `deployment.py` | First-class individual/platoon deployment recommendation wrapper around mission-mode operational twin runs |
 | `llm.py` | JSON LLM client boundary for OpenAI-backed agent stages without requiring an SDK dependency |
 | `decision_quality.py` | Deterministic decision-quality, value-of-information, utility, and reliance guidance for recommendation responses |
 | `service.py` | Orchestrates scoring, assignment, fairness, career forecast, trace metadata, and audit logging |
@@ -185,6 +220,11 @@ Canonical endpoints:
 | `GET` | `/v1/operational-twin/runs/{twin_run_id}` | Operational twin run lookup |
 | `POST` | `/v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` | Human approve/reject/escalate decision |
 | `POST` | `/v1/operational-twin/runs/{twin_run_id}/outcome` | Outcome, rating, safety incident flag, and AAR capture |
+| `POST` | `/v1/deployment-recommendations` | Individual/platoon deployment posture recommendation from processed evidence |
+| `GET` | `/v1/deployment-recommendations/{deployment_recommendation_id}` | Stored deployment recommendation lookup |
+| `GET` | `/v1/missions/{mission_id}/deployment-recommendations` | Mission deployment recommendation history |
+| `POST` | `/v1/deployment-recommendations/{deployment_recommendation_id}/approval` | Human approve/reject/escalate decision |
+| `POST` | `/v1/deployment-recommendations/{deployment_recommendation_id}/outcome` | Deployment outcome, AAR signals, and lesson draft |
 | `POST` | `/v1/score` | Mission roster scoring |
 | `POST` | `/v1/agent-runs` | Agentic recommendation workflow |
 | `GET` | `/v1/agent-runs/{run_id}` | Agent run lookup |
@@ -224,6 +264,10 @@ Core contracts:
 - `ScenarioOption`
 - `ScenarioOptionDecisionRequest`
 - `LessonLearned`
+- `DeploymentRecommendationRequest`
+- `DeploymentRecommendationResponse`
+- `PlatoonDeploymentRecommendation`
+- `IndividualDeploymentRecommendation`
 - `ScoreRequest`
 - `Soldier`
 - `RoleRequirement`
@@ -250,11 +294,12 @@ Every candidate assessment includes:
 - narrative
 - second-choice ID for primary roster entries
 
-Every roster, adaptation, operational twin, scenario option, and agent-run
-response includes decision-quality fields. These fields estimate framing
-completeness, evidence sufficiency, uncertainty, reversibility, value of
-information, expected utility, and recommended human reliance posture. They are
-not approval decisions and do not change scoring or assignment order.
+Every roster, adaptation, operational twin, deployment recommendation, scenario
+option, and agent-run response includes decision-quality fields. These fields
+estimate framing completeness, evidence sufficiency, uncertainty,
+reversibility, value of information, expected utility, and recommended human
+reliance posture. They are not approval decisions and do not change scoring,
+assignment order, or deployment posture by themselves.
 
 Every adaptation response includes:
 
@@ -295,6 +340,30 @@ safety/doctrine auditor blocks options that exceed `max_safety_risk`, violate
 blocked inject types, or conflict with configured environmental-stress limits.
 The service writes a hash-chained audit record and an `entity_update_events`
 row for each generated adaptation and approval decision.
+
+## Deployment Recommendation
+
+`deployment.py` implements the first-class deployment recommendation contract.
+It accepts mission context plus processed System 1 observations, terrain,
+weather, readiness, constraints, and optional target soldier IDs. It creates a
+mission-mode `OperationalTwinRequest`, runs the operational twin, selects the
+highest-utility non-rejected option, and derives a deployment posture:
+
+- `deploy` when readiness and critic review support action
+- `deploy_with_controls` when execution is plausible but risk or critic status
+  requires controls
+- `hold` when readiness or fatigue indicates the team should not deploy as-is
+- `escalate_review` when evidence quality, governance, or option rejection
+  requires higher review
+
+The response includes platoon and per-soldier recommendation wrappers,
+required controls, source references, agent trace, three governed options, and
+decision-quality, utility, and reliance guidance. The service persists the
+recommendation lifecycle, records approve/reject/escalate decisions, captures
+outcome/AAR signals, and emits draft lessons. It writes audit records and
+shared update events for recommendation, approval, and outcome transitions. It
+does not issue orders, mutate soldier records, or replace the named human
+approval gate.
 
 ## Scoring
 
@@ -426,9 +495,10 @@ scraping mutable run payloads.
 
 ## Cross-System Boundaries
 
-System 1 can supply longitudinal training features through canonical Postgres
-projections, pgvector context, and FalkorDB relationships. System 3 can consume
-approved recommendations and assignment evidence from `entity_update_events`
-and `decision_snapshots`. This service should still score a request when those
+System 1 can supply longitudinal training features and processed observations
+through canonical Postgres projections, pgvector context, and FalkorDB
+relationships. System 3 can consume approved recommendations, deployment
+recommendation events, and assignment evidence from `entity_update_events` and
+`decision_snapshots`. This service should still score a request when those
 systems are unavailable, as long as the request contains explicit candidate and
 role data or the local candidate-pool backend is intentionally enabled.

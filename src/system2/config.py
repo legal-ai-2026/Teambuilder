@@ -13,6 +13,7 @@ _BACKENDS = {
     "agent_state": {"memory", "redis"},
     "audit": {"file", "postgres"},
     "candidate_pool": {"local", "postgres"},
+    "deployment_repository": {"memory", "postgres"},
     "operational_twin_repository": {"memory", "postgres"},
     "retrieval": {"local", "pgvector"},
     "graph": {"local", "falkordb"},
@@ -142,6 +143,7 @@ class InfraSettings:
     agent_repository_backend: str
     agent_state_backend: str
     candidate_pool_backend: str
+    deployment_repository_backend: str
     operational_twin_repository_backend: str
     retrieval_backend: str
     graph_backend: str
@@ -198,6 +200,11 @@ class InfraSettings:
                 source.get("CANDIDATE_POOL_BACKEND"),
                 default="postgres" if database_url else "local",
                 kind="candidate_pool",
+            ),
+            deployment_repository_backend=_backend(
+                source.get("DEPLOYMENT_REPOSITORY_BACKEND"),
+                default="postgres" if database_url else "memory",
+                kind="deployment_repository",
             ),
             operational_twin_repository_backend=_backend(
                 source.get("OPERATIONAL_TWIN_REPOSITORY_BACKEND"),
@@ -261,6 +268,7 @@ class InfraSettings:
                 "agent_repository": self.agent_repository_backend,
                 "agent_state": self.agent_state_backend,
                 "candidate_pool": self.candidate_pool_backend,
+                "deployment_repository": self.deployment_repository_backend,
                 "operational_twin_repository": self.operational_twin_repository_backend,
                 "retrieval": self.retrieval_backend,
                 "graph": self.graph_backend,

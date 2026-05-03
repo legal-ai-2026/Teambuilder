@@ -5,11 +5,15 @@ Adaptation Engine. It explains how a frontend should call the API, what data it
 should send, what it should render, and which backend limitations it must handle
 explicitly.
 
-System 2 has two lanes:
+System 2 has three lanes:
 
 - Developmental lane: live field evidence goes to `/v1/adaptations`, the
   backend estimates cognitive/team state, proposes scenario injects, and waits
   for instructor approval.
+- Deployment lane: processed System 1 evidence plus mission context, terrain,
+  weather, and readiness go to `/v1/deployment-recommendations`, the backend
+  returns human-gated individual/platoon deployment posture and required
+  controls.
 - Talent lane: roster scoring and agent-run approval remain available through
   `/v1/score` and `/v1/agent-runs`, but they should be treated as downstream
   decision support rather than the main live training loop.
@@ -73,9 +77,10 @@ The frontend should:
 - Display source references, confidence, risk, safety checks, and rationale for
   every recommendation.
 - Display `decision_quality`, `utility_estimate`, and `reliance_guidance` on
-  recommendation, operational twin, adaptation, and roster review surfaces.
+  recommendation, operational twin, deployment, adaptation, and roster review
+  surfaces.
 - Keep instructor approval explicit. The frontend must never auto-approve a
-  scenario inject or roster decision.
+  scenario inject, deployment posture, or roster decision.
 - Treat developmental evidence as sensitive. Do not expose raw reflective notes,
   fatigue comments, or protected attributes beyond users with a need to know.
 - Preserve the returned `adaptation_id` for refresh and timeline lookups.
@@ -84,6 +89,7 @@ The frontend should not:
 
 - Assemble full soldier records for normal integrated operation.
 - Treat recommendations as final orders.
+- Send raw audio/images directly to System 2; STT/OCR belongs in System 1.
 - Treat synthetic fallback data as operational truth.
 - Hide blocked recommendations; blocked cards are useful safety evidence.
 
@@ -116,7 +122,34 @@ The frontend should have these screens or panels:
 - Approval controls: approve, reject, and rationale text box.
 - Trace drawer: source refs, model versions, hashes, generated timestamp.
 
-### 2. Roster Scoring
+### 2. Deployment Recommendation
+
+Use this when the mission UI needs a deployment recommendation for an
+individual or platoon from already processed evidence.
+
+```text
+Commander selects mission
+  -> frontend loads processed System 1 observations, mission context, terrain, weather, readiness
+  -> POST /v1/deployment-recommendations
+  -> render platoon posture, individual postures, options, controls, and trace
+  -> authorized human approves outside System 2 or records the downstream decision in the owning system
+```
+
+The frontend should have these panels:
+
+- Mission context: mission summary, terrain, weather, constraints, readiness.
+- Evidence panel: processed System 1 observations, transcripts, OCR text, and
+  source refs.
+- Deployment posture: `deploy`, `deploy_with_controls`, `hold`, or
+  `escalate_review`.
+- Individual recommendations: soldier ID, inherited posture, readiness score,
+  risk level, required controls, evidence refs.
+- Option cards: twin scenario/COA option, risk, confidence, critic status,
+  critic reasons, decision quality, utility, and reliance posture.
+- Trace drawer: `source_twin_run_id`, source refs, agent trace hashes, fallback
+  reasons, and generated timestamps.
+
+### 3. Roster Scoring
 
 Use this as a secondary or downstream talent workflow.
 
@@ -126,7 +159,7 @@ Frontend sends mission_id and candidate_pool_id
   -> render roster, second choices, fairness audit, risk factors, decision quality
 ```
 
-### 3. Agentic Roster Run
+### 4. Agentic Roster Run
 
 Use this if the frontend needs durable run state and approval for roster
 recommendations.
@@ -146,6 +179,15 @@ POST /v1/agent-runs
 | `GET` | `/v1/adaptations/{adaptation_id}` | Fetch a stored adaptation | details/refresh |
 | `GET` | `/v1/missions/{mission_id}/adaptations` | List adaptations for a mission | timeline/history |
 | `POST` | `/v1/adaptations/{adaptation_id}/approval` | Approve or reject a scenario inject | instructor decision |
+| `POST` | `/v1/operational-twin/runs` | Run operational twin and draft governed options | backend/advanced details |
+| `GET` | `/v1/operational-twin/runs/{twin_run_id}` | Fetch operational twin run | backend/advanced details |
+| `POST` | `/v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision` | Record twin option decision | operator decision |
+| `POST` | `/v1/operational-twin/runs/{twin_run_id}/outcome` | Capture selected-option outcome and AAR | outcome/AAR capture |
+| `POST` | `/v1/deployment-recommendations` | Recommend individual/platoon deployment posture | deployment workflow |
+| `GET` | `/v1/deployment-recommendations/{deployment_recommendation_id}` | Fetch deployment recommendation lifecycle | details/refresh |
+| `GET` | `/v1/missions/{mission_id}/deployment-recommendations` | List deployment recommendation history | timeline/history |
+| `POST` | `/v1/deployment-recommendations/{deployment_recommendation_id}/approval` | Approve, reject, or escalate deployment recommendation | commander decision |
+| `POST` | `/v1/deployment-recommendations/{deployment_recommendation_id}/outcome` | Capture deployment outcome and AAR | outcome/AAR capture |
 | `POST` | `/v1/score` | Direct roster scoring | downstream roster view |
 | `POST` | `/v1/agent-runs` | Durable roster recommendation workflow | roster approval workflow |
 | `GET` | `/v1/agent-runs/{run_id}` | Fetch roster agent run | polling/details |
@@ -465,6 +507,106 @@ Frontend behavior:
 - On rejection, keep the recommendation visible and mark it rejected in the UI.
 - If approval returns `404`, the `adaptation_id` is invalid or points to a
   backend repository that does not contain the adaptation.
+
+## Deployment Recommendations
+
+### Create Deployment Recommendation
+
+```http
+POST /v1/deployment-recommendations
+Content-Type: application/json
+```
+
+Minimal request:
+
+```json
+{
+  "mission_id": "deployment-demo",
+  "requester_id": "commander-1",
+  "team_id": "platoon-alpha",
+  "scope": "platoon",
+  "target_soldier_ids": ["RGR-0001", "RGR-0002"],
+  "mission_context": "Move platoon to observation position with time-sensitive support coordination.",
+  "terrain": "Rough wooded draw with constrained visibility.",
+  "weather": {
+    "condition": "cold wind",
+    "temperature_c": 3,
+    "wind_speed": 18
+  },
+  "readiness": {
+    "sleep_hours": 4.2,
+    "hydration": 0.62
+  },
+  "processed_observations": [
+    {
+      "kind": "system1_observation",
+      "content": "System 1 observation: missed two comms acknowledgements; leader recovered after terrain-support timing cue.",
+      "metadata": {
+        "observation_id": "s1-obs-001"
+      }
+    }
+  ],
+  "constraints": ["no avoidable fatigue load"],
+  "require_human_approval": true
+}
+```
+
+Use `scope: "individual"` for a single-soldier recommendation surface and
+`scope: "platoon"` for team-level posture. `processed_observations` accepts the
+same processed `ArtifactInput` kinds as the operational twin, such as
+`system1_observation`, `transcript`, `ocr_text`, `telemetry`, and
+`manual_note`. Raw media should already have been processed by System 1.
+
+Important response fields:
+
+```json
+{
+  "deployment_recommendation_id": "deploy-...",
+  "mission_id": "deployment-demo",
+  "team_id": "platoon-alpha",
+  "scope": "platoon",
+  "status": "pending_approval",
+  "source_twin_run_id": "twin-...",
+  "platoon_recommendation": {
+    "posture": "deploy_with_controls",
+    "readiness_score": 0.66,
+    "risk_level": "medium",
+    "required_controls": []
+  },
+  "individual_recommendations": [],
+  "options": [],
+  "decisions": [],
+  "outcomes": [],
+  "lessons_learned": [],
+  "agent_trace": [],
+  "source_refs": [],
+  "decision_quality": {},
+  "utility_estimate": {},
+  "reliance_guidance": {}
+}
+```
+
+Posture values:
+
+- `deploy`: evidence supports deployment with normal human review.
+- `deploy_with_controls`: deployment may proceed only after listed controls.
+- `hold`: readiness or fatigue indicates the element should not deploy as-is.
+- `escalate_review`: the evidence or option set needs higher-level review.
+
+Frontend behavior:
+
+- Treat `pending_approval` as non-final.
+- Render `required_controls` as blocking checklist items before any downstream
+  approval action.
+- After a named decision, refresh the record with
+  `GET /v1/deployment-recommendations/{deployment_recommendation_id}`.
+- Use the outcome endpoint after execution or rehearsal AAR to capture
+  commander rating, safety/near-miss signals, recommendation usefulness, and
+  missed factors.
+- Show `source_twin_run_id` so operators can open the underlying twin evidence.
+- Keep all three `options` visible, including critic-modified or escalated
+  options, because they explain the posture.
+- Render `reliance_guidance.human_accountability` near the final action button.
 
 ## Roster Scoring
 
@@ -818,6 +960,12 @@ type Confidence = "high" | "medium" | "low";
 type Decision = "approved" | "rejected";
 type RiskLevel = "low" | "medium" | "high";
 type InjectType = "direct_pressure" | "skill_isolation" | "transfer_test";
+type DeploymentScope = "individual" | "platoon";
+type DeploymentPosture =
+  | "deploy"
+  | "deploy_with_controls"
+  | "hold"
+  | "escalate_review";
 
 type CognitiveDimension =
   | "sensemaking"
@@ -890,6 +1038,102 @@ interface ScenarioInjectRecommendation {
   status: "pending_approval" | "blocked";
   block_reason?: string | null;
 }
+
+interface DeploymentRecommendationRequest {
+  mission_id: string;
+  requester_id: string;
+  team_id: string;
+  scope?: DeploymentScope;
+  target_soldier_ids?: string[];
+  mission_context: string;
+  terrain?: string | null;
+  weather?: Record<string, unknown>;
+  readiness?: Record<string, unknown>;
+  processed_observations?: Array<{
+    kind: string;
+    content: string;
+    artifact_id?: string | null;
+    source_system?: string | null;
+    metadata?: Record<string, unknown>;
+  }>;
+  constraints?: string[];
+  require_human_approval?: boolean;
+}
+
+interface DeploymentRecommendationResponse {
+  deployment_recommendation_id: string;
+  mission_id: string;
+  team_id: string;
+  scope: DeploymentScope;
+  status:
+    | "pending_approval"
+    | "approved"
+    | "rejected"
+    | "escalated"
+    | "completed"
+    | "outcome_recorded";
+  source_twin_run_id: string;
+  platoon_recommendation: {
+    team_id: string;
+    posture: DeploymentPosture;
+    readiness_score: number;
+    risk_level: RiskLevel;
+    recommended_option_id?: string | null;
+    rationale: string;
+    required_controls: string[];
+    evidence_refs: string[];
+  };
+  individual_recommendations: Array<{
+    soldier_id: string;
+    posture: DeploymentPosture;
+    readiness_score: number;
+    risk_level: RiskLevel;
+    recommended_role?: string | null;
+    rationale: string;
+    required_controls: string[];
+    evidence_refs: string[];
+  }>;
+  decisions: Array<{
+    decision_id: string;
+    selected_option_id?: string | null;
+    actor_id: string;
+    decision: "approved" | "rejected" | "escalated";
+    approved_posture?: DeploymentPosture | null;
+    comment: string;
+    timestamp_utc: string;
+  }>;
+  outcomes: Array<{
+    outcome_id: string;
+    selected_option_id?: string | null;
+    observed_outcome_summary: string;
+    commander_rating: number;
+    safety_incident: boolean;
+    near_miss: boolean;
+    mission_effectiveness_estimate: number;
+    recommendation_accepted: boolean;
+    recommendation_helpful: boolean;
+    missed_factor?: string | null;
+    should_have_escalated: boolean;
+    recorded_at_utc: string;
+  }>;
+  lessons_learned: Array<Record<string, unknown>>;
+}
+
+interface DeploymentApprovalResponse {
+  deployment_recommendation_id: string;
+  status: "approved" | "rejected" | "escalated";
+  decision: {
+    decision_id: string;
+    selected_option_id?: string | null;
+    actor_id: string;
+    decision: "approved" | "rejected" | "escalated";
+    approved_posture?: DeploymentPosture | null;
+    comment: string;
+    timestamp_utc: string;
+  };
+  lesson_learned?: Record<string, unknown> | null;
+  decided_at_utc: string;
+}
 ```
 
 ## Suggested Fetch Wrapper
@@ -927,6 +1171,35 @@ const adaptation = await apiFetch<CognitiveAdaptationResponse>("/v1/adaptations"
   method: "POST",
   body: JSON.stringify(request),
 });
+```
+
+Create a deployment recommendation:
+
+```ts
+const deployment = await apiFetch<DeploymentRecommendationResponse>(
+  "/v1/deployment-recommendations",
+  {
+    method: "POST",
+    body: JSON.stringify(deploymentRequest),
+  },
+);
+```
+
+Approve a deployment recommendation:
+
+```ts
+const deploymentApproval = await apiFetch<DeploymentApprovalResponse>(
+  `/v1/deployment-recommendations/${deployment.deployment_recommendation_id}/approval`,
+  {
+    method: "POST",
+    body: JSON.stringify({
+      decision: "approved",
+      actor_id: currentUser.id,
+      selected_option_id: deployment.platoon_recommendation.recommended_option_id,
+      comment: approvalComment,
+    }),
+  },
+);
 ```
 
 Approve an inject:
@@ -987,12 +1260,34 @@ Button logic:
 - If `approval_required = true`, show approve/reject buttons.
 - Require rationale before either decision.
 
+### Deployment Posture Panel
+
+Render:
+
+- `platoon_recommendation.posture`
+- `readiness_score` and `risk_level`
+- `recommended_option_id`
+- `required_controls`
+- `individual_recommendations`
+- `options` with critic status and reasons
+- `decision_quality`, `utility_estimate`, and `reliance_guidance`
+
+Button logic:
+
+- If `status = "pending_approval"`, require named human review before
+  downstream execution.
+- If posture is `hold` or `escalate_review`, block any simple approve action
+  and route to the escalation workflow.
+- If posture is `deploy_with_controls`, require every control to be checked or
+  explicitly overridden with rationale.
+
 ### Timeline
 
 Recommended timeline event types:
 
 - evidence captured
 - adaptation generated
+- deployment recommendation generated
 - recommendation blocked
 - recommendation approved
 - recommendation rejected
@@ -1027,6 +1322,9 @@ For production:
   populated. Retrieval and graph context can create bounded scoring adjustments,
   but broader weather, terrain, qualification, and unit-history transforms are
   still future work.
+- Individual deployment recommendations currently inherit the team readiness
+  posture unless the request and future model path provide soldier-specific
+  readiness evidence.
 
 ## Minimum Frontend Demo Cut
 
