@@ -18,6 +18,8 @@ _BACKENDS = {
     "shared_data": {"memory", "postgres"},
 }
 
+_AGENTIC_PROVIDERS = {"auto", "deterministic", "openai"}
+
 
 def _env_bool(value: str | None, *, default: bool = False) -> bool:
     if value is None:
@@ -71,6 +73,14 @@ def _backend(value: str | None, *, default: str, kind: str) -> str:
     return selected
 
 
+def _agentic_provider(value: str | None) -> str:
+    selected = (value or "auto").strip().lower()
+    if selected not in _AGENTIC_PROVIDERS:
+        allowed_values = ", ".join(sorted(_AGENTIC_PROVIDERS))
+        raise ValueError(f"agentic provider must be one of: {allowed_values}")
+    return selected
+
+
 def normalize_postgres_url(value: str | None) -> str | None:
     if not value:
         return None
@@ -113,6 +123,10 @@ class InfraSettings:
     api_key: str | None
     admin_api_key: str | None
     cors_allowed_origins: tuple[str, ...]
+    agentic_provider: str
+    openai_api_key: str | None
+    openai_model: str
+    openai_base_url: str
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "InfraSettings":
@@ -124,6 +138,7 @@ class InfraSettings:
         pgvector_enabled = _env_bool(source.get("PGVECTOR_ENABLED"), default=source.get("PGVECTOR_CONNECTION_STRING") is not None)
         api_key = _optional_value(source.get("SYSTEM2_API_KEY"))
         admin_api_key = _optional_value(source.get("SYSTEM2_ADMIN_API_KEY")) or api_key
+        openai_api_key = _optional_value(source.get("OPENAI_API_KEY"))
         return cls(
             database_url=database_url,
             pgvector_url=pgvector_url,
@@ -174,6 +189,10 @@ class InfraSettings:
             api_key=api_key,
             admin_api_key=admin_api_key,
             cors_allowed_origins=_csv_values(source.get("SYSTEM2_CORS_ORIGINS")),
+            agentic_provider=_agentic_provider(source.get("SYSTEM2_AGENTIC_PROVIDER")),
+            openai_api_key=openai_api_key,
+            openai_model=source.get("OPENAI_MODEL", "gpt-5.4-mini"),
+            openai_base_url=source.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         )
 
     def status(self) -> dict[str, object]:
@@ -207,5 +226,11 @@ class InfraSettings:
                 "api_key_required": self.api_key is not None,
                 "admin_api_key_required": self.admin_api_key is not None,
                 "cors_allowed_origins": list(self.cors_allowed_origins),
+            },
+            "agentic_runtime": {
+                "provider": self.agentic_provider,
+                "openai_configured": self.openai_api_key is not None,
+                "openai_model": self.openai_model,
+                "openai_base_url": redact_url(self.openai_base_url),
             },
         }

@@ -123,6 +123,13 @@ observations, provisional `StateEstimate`, `EvidenceBundle`, draft
 `LessonLearned` outputs. Scenario options always start as `draft`; approval,
 rejection, or escalation is recorded through the decision endpoint.
 
+Set `SYSTEM2_AGENTIC_PROVIDER=auto` or `openai` and provide `OPENAI_API_KEY` to
+run the complete agentic path. The runtime uses OpenAI JSON responses for
+perception, state estimation, scenario direction, and critic review. If OpenAI
+is unavailable in `auto` mode, the endpoint records a fallback stage in
+`agent_trace` and keeps the deterministic output. Use
+`SYSTEM2_AGENTIC_PROVIDER=deterministic` for offline validation.
+
 `ScoreRequest` accepts either:
 
 - `candidate_pool_id`: canonical ID recorded for cross-system provenance
@@ -176,6 +183,13 @@ tempo risk, and training challenge gap, the scenario director drafts exactly
 three options, and the critic marks each option as pass, modify, escalate, or
 reject. A separate decision method records the named human decision and creates
 a lesson-learned draft when an option is approved.
+
+`llm.py`
+
+Defines the JSON agent-client protocol and an OpenAI chat-completions adapter.
+The adapter requests JSON objects and parses them before the operational twin
+service validates the result against strict Pydantic contracts. The project
+does not require the OpenAI Python SDK.
 
 `security.py`
 

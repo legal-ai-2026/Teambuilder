@@ -86,6 +86,21 @@ This loop is the Foundry-style operational twin slice. Raw evidence, inferred
 state, draft options, and human decisions are separate objects. The service
 does not auto-approve scenario options or mission COAs.
 
+The loop can run as a complete agentic system. With
+`SYSTEM2_AGENTIC_PROVIDER=auto` or `openai` and `OPENAI_API_KEY` configured,
+the backend invokes four JSON-producing agents:
+
+| Agent stage | Responsibility | Hard boundary |
+|---|---|---|
+| Perception | Extract source-linked atomic observations from artifacts | No motive, protected-attribute, or personnel judgment inference |
+| State | Estimate provisional fatigue, clarity, cohesion, decision, tempo, and challenge-gap state | State is an estimate with uncertainty, not an asserted fact |
+| Scenario | Draft exactly three distinct options | Draft only; no autonomous approval |
+| Critic | Review grounding, safety, diversity, fatigue overload, and governance | Deterministic safety gates cannot be weakened |
+
+When OpenAI is unavailable or disabled, the same API keeps using the
+deterministic runtime. Each run includes `agent_trace` entries that identify
+the provider, model, stage status, and fallback reason when one occurred.
+
 ## Roster Runtime Flow
 
 ```text
@@ -131,6 +146,7 @@ The active package is `src/system2/`.
 | `adaptation_store.py` | In-memory and Postgres repositories for adaptation lookup and mission history |
 | `cognitive.py` | Evidence fusion, cognitive state estimation, scenario direction, safety/doctrine gating, and adaptation approval |
 | `operational_twin.py` | Backend operational twin loop for multimodal evidence, state estimates, governed options, decisions, and lessons |
+| `llm.py` | JSON LLM client boundary for OpenAI-backed agent stages without requiring an SDK dependency |
 | `service.py` | Orchestrates scoring, assignment, fairness, career forecast, trace metadata, and audit logging |
 | `candidate_pool.py` | Resolves `candidate_pool_id` into canonical soldiers, role slots, and source references |
 | `models.py` | Pydantic request/response contracts and enums |

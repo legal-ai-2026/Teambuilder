@@ -59,6 +59,10 @@ RETRIEVAL_BACKEND=pgvector
 GRAPH_BACKEND=falkordb
 SHARED_DATA_BACKEND=postgres
 SYSTEM2_AUDIT_LOG=/var/log/system2/audit.jsonl
+SYSTEM2_AGENTIC_PROVIDER=auto
+OPENAI_API_KEY=replace-me-openai-key
+OPENAI_MODEL=gpt-5.4-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
 SYSTEM2_CORS_ORIGINS=https://frontend.example.mil
 SYSTEM2_API_KEY=replace-me-service-key
 SYSTEM2_ADMIN_API_KEY=replace-me-admin-key
@@ -81,6 +85,13 @@ workflow routes are open. When it is set, protected routes accept either
 `/v1/healthz` remain public. `/admin/disable` and `/admin/enable` require
 `SYSTEM2_ADMIN_API_KEY`; if no admin key is provided, they fall back to
 `SYSTEM2_API_KEY`.
+
+The operational twin supports three agentic runtime modes through
+`SYSTEM2_AGENTIC_PROVIDER`: `auto`, `openai`, or `deterministic`. `auto` uses
+OpenAI when `OPENAI_API_KEY` is present and otherwise keeps the local
+deterministic fallback. The OpenAI path runs four explicit agents: perception,
+state estimation, scenario direction, and critic review. Every run returns
+`agent_trace` so callers can see which provider handled each stage.
 
 ## Quick Start
 

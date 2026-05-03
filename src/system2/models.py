@@ -600,6 +600,17 @@ class OperationalTwinRequest(StrictBaseModel):
     require_human_approval: bool = True
 
 
+class AgentStageTrace(StrictBaseModel):
+    stage: str
+    provider: str
+    model: str
+    status: Literal["completed", "fallback", "failed"]
+    summary: str
+    error: str | None = None
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class OperationalTwinResponse(StrictBaseModel):
     twin_run_id: str
     mission_id: str
@@ -614,6 +625,7 @@ class OperationalTwinResponse(StrictBaseModel):
     scenario_options: list[ScenarioOption]
     decisions: list[OperationalTwinDecision] = Field(default_factory=list)
     lessons_learned: list[LessonLearned] = Field(default_factory=list)
+    agent_trace: list[AgentStageTrace] = Field(default_factory=list)
     created_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

@@ -28,6 +28,7 @@ from .models import (
     ScoreRequest,
     SourceReference,
 )
+from .llm import OpenAIJsonAgentClient
 from .operational_twin import OperationalTwinService
 from .security import ApiKeyGuard
 from .service import SelectionService
@@ -71,6 +72,18 @@ cognitive_service = CognitiveAdaptationService(
 operational_twin_service = OperationalTwinService(
     audit_log=service.audit_log,
     shared_data_sink=agent_orchestrator.shared_data_sink,
+    agent_provider=api_settings.agentic_provider,
+    llm_client=(
+        OpenAIJsonAgentClient(
+            api_key=api_settings.openai_api_key,
+            model=api_settings.openai_model,
+            base_url=api_settings.openai_base_url,
+        )
+        if api_settings.openai_api_key
+        and api_settings.agentic_provider in {"auto", "openai"}
+        else None
+    ),
+    llm_model=api_settings.openai_model,
 )
 
 

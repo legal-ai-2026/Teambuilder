@@ -315,7 +315,9 @@ Operational twin runs append `entity_update_events` with entity type
 `operational_twin`. Option decisions append `operational_twin_option` events.
 The payloads carry mission/team IDs, evidence bundle ID, state estimate ID,
 scenario option IDs, decision IDs, and lesson IDs when an approved option emits
-a lesson draft.
+a lesson draft. The full run response also carries `agent_trace`, which records
+the provider, model, status, and fallback/error details for perception, state,
+scenario, and critic agent stages.
 
 Current implemented score input:
 

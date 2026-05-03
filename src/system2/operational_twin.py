@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -7,7 +8,9 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .audit import AuditLog, AuditSink
+from .llm import JsonAgentClient
 from .models import (
+    AgentStageTrace,
     ArtifactInput,
     ArtifactRecord,
     EnvironmentState,
@@ -41,6 +44,18 @@ from .shared_data import (
     build_operational_twin_update_event,
     canonical_hash,
 )
+
+
+_OBSERVATION_KINDS = {
+    "voice_fact",
+    "ocr_fact",
+    "telemetry_fact",
+    "weather_fact",
+    "sleep_food_fact",
+    "photo_fact",
+    "manual_note",
+}
+_CRITIC_STATUSES = {"pass", "modify", "escalate", "reject"}
 
 
 class OperationalTwinRepository(Protocol):
@@ -81,19 +96,39 @@ class OperationalTwinService:
     audit_log: AuditSink = field(default_factory=AuditLog)
     shared_data_sink: SharedDataSink = field(default_factory=InMemorySharedDataSink)
     repository: OperationalTwinRepository = field(default_factory=InMemoryOperationalTwinRepository)
+    agent_provider: str = "deterministic"
+    llm_client: JsonAgentClient | None = None
+    llm_model: str = "deterministic"
 
     def run(self, request: OperationalTwinRequest) -> OperationalTwinResponse:
         artifact_inputs = _artifact_inputs(request)
         artifacts = [_artifact_record(item) for item in artifact_inputs]
-        observations = _observation_records(request, artifacts)
+        baseline_observations = _observation_records(request, artifacts)
+        observations, agent_trace = _agentic_observations(
+            request=request,
+            artifacts=artifacts,
+            baseline_observations=baseline_observations,
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+        )
         if not observations:
             raise ValueError("operational twin runs require at least one artifact or observation")
 
         twin_run_id = f"twin-{uuid4()}"
         evidence_bundle_id = f"eb-{uuid4()}"
         environment_state = _environment_state(request)
-        state_vector = _estimate_state_vector(observations, environment_state)
-        uncertainty = _estimate_uncertainty(observations, state_vector)
+        baseline_state_vector = _estimate_state_vector(observations, environment_state)
+        baseline_uncertainty = _estimate_uncertainty(observations, baseline_state_vector)
+        state_vector, uncertainty, state_trace = _agentic_state_estimate(
+            request=request,
+            observations=observations,
+            environment_state=environment_state,
+            baseline_state_vector=baseline_state_vector,
+            baseline_uncertainty=baseline_uncertainty,
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+        )
+        agent_trace.extend(state_trace)
         state_estimate = StateEstimate(
             state_estimate_id=f"se-{uuid4()}",
             subject_type="team",
@@ -114,12 +149,32 @@ class OperationalTwinService:
             policy_checks=policy_checks,
             previous_action_hash=self.repository.last_action_hash(),
         )
-        scenario_options = _scenario_options(
+        baseline_options = _scenario_options(
             request=request,
             observations=observations,
             state_estimate=state_estimate,
             evidence_bundle=evidence_bundle,
         )
+        scenario_options, scenario_trace = _agentic_scenario_options(
+            request=request,
+            observations=observations,
+            state_estimate=state_estimate,
+            evidence_bundle=evidence_bundle,
+            baseline_options=baseline_options,
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+        )
+        agent_trace.extend(scenario_trace)
+        scenario_options, critic_trace = _agentic_critic_review(
+            request=request,
+            observations=observations,
+            state_estimate=state_estimate,
+            evidence_bundle=evidence_bundle,
+            options=scenario_options,
+            llm_client=self.llm_client,
+            agent_provider=self.agent_provider,
+        )
+        agent_trace.extend(critic_trace)
         now = datetime.now(UTC)
         response = OperationalTwinResponse(
             twin_run_id=twin_run_id,
@@ -132,6 +187,7 @@ class OperationalTwinService:
             state_estimate=state_estimate,
             evidence_bundle=evidence_bundle,
             scenario_options=scenario_options,
+            agent_trace=agent_trace,
             created_at_utc=now,
             updated_at_utc=now,
         )
@@ -148,6 +204,7 @@ class OperationalTwinService:
                 "observation_count": len(observations),
                 "scenario_option_count": len(scenario_options),
                 "evidence_bundle_id": evidence_bundle.bundle_id,
+                "agent_provider": self.agent_provider,
             },
         )
         self.shared_data_sink.append_update_event(
@@ -232,6 +289,289 @@ class OperationalTwinService:
             build_operational_twin_decision_update_event(updated_run, request, response)
         )
         return response
+
+
+def _agentic_observations(
+    *,
+    request: OperationalTwinRequest,
+    artifacts: Sequence[ArtifactRecord],
+    baseline_observations: Sequence[ObservationRecord],
+    llm_client: JsonAgentClient | None,
+    agent_provider: str,
+) -> tuple[list[ObservationRecord], list[AgentStageTrace]]:
+    if not _llm_enabled(llm_client, agent_provider):
+        return list(baseline_observations), [
+            _trace(
+                stage="perception",
+                provider="deterministic",
+                model=MODEL_VERSIONS["operational_twin_perception"],
+                status="completed",
+                summary="Normalized artifacts and explicit observations with deterministic perception.",
+            )
+        ]
+
+    started_at = datetime.now(UTC)
+    try:
+        payload = llm_client.complete_json(
+            stage="perception",
+            system=_perception_system_prompt(),
+            user=json.dumps(
+                {
+                    "mission_id": request.mission_id,
+                    "team_id": request.team_id,
+                    "mode": request.mode,
+                    "artifacts": [item.model_dump(mode="json") for item in artifacts],
+                    "baseline_observations": [
+                        item.model_dump(mode="json") for item in baseline_observations
+                    ],
+                },
+                sort_keys=True,
+                default=str,
+            ),
+        )
+        generated = _observations_from_agent_payload(request, artifacts, payload)
+        observations = _dedupe_observations([*baseline_observations, *generated])
+        if not generated:
+            return observations, [
+                _trace(
+                    stage="perception",
+                    provider=llm_client.provider,
+                    model=llm_client.model,
+                    status="fallback",
+                    summary="OpenAI perception returned no usable observations; deterministic observations retained.",
+                    started_at=started_at,
+                )
+            ]
+        return observations, [
+            _trace(
+                stage="perception",
+                provider=llm_client.provider,
+                model=llm_client.model,
+                status="completed",
+                summary=f"OpenAI perception added {len(generated)} source-linked observations.",
+                started_at=started_at,
+            )
+        ]
+    except Exception as exc:
+        return list(baseline_observations), [
+            _trace(
+                stage="perception",
+                provider=_provider_name(llm_client, agent_provider),
+                model=_model_name(llm_client),
+                status="fallback",
+                summary="Agentic perception failed; deterministic observations retained.",
+                error=str(exc),
+                started_at=started_at,
+            )
+        ]
+
+
+def _agentic_state_estimate(
+    *,
+    request: OperationalTwinRequest,
+    observations: Sequence[ObservationRecord],
+    environment_state: EnvironmentState | None,
+    baseline_state_vector: OperationalStateVector,
+    baseline_uncertainty: StateUncertainty,
+    llm_client: JsonAgentClient | None,
+    agent_provider: str,
+) -> tuple[OperationalStateVector, StateUncertainty, list[AgentStageTrace]]:
+    if not _llm_enabled(llm_client, agent_provider):
+        return baseline_state_vector, baseline_uncertainty, [
+            _trace(
+                stage="state",
+                provider="deterministic",
+                model=MODEL_VERSIONS["operational_twin_state_estimator"],
+                status="completed",
+                summary="Estimated latent state with deterministic evidence scoring.",
+            )
+        ]
+
+    started_at = datetime.now(UTC)
+    try:
+        payload = llm_client.complete_json(
+            stage="state",
+            system=_state_system_prompt(),
+            user=json.dumps(
+                {
+                    "mission_id": request.mission_id,
+                    "team_id": request.team_id,
+                    "mode": request.mode,
+                    "environment_state": (
+                        environment_state.model_dump(mode="json")
+                        if environment_state is not None
+                        else None
+                    ),
+                    "observations": [item.model_dump(mode="json") for item in observations],
+                    "baseline_state_vector": baseline_state_vector.model_dump(mode="json"),
+                    "baseline_uncertainty": baseline_uncertainty.model_dump(mode="json"),
+                },
+                sort_keys=True,
+                default=str,
+            ),
+        )
+        vector = _state_vector_from_agent_payload(payload, baseline_state_vector)
+        uncertainty = _uncertainty_from_agent_payload(payload, baseline_uncertainty)
+        return vector, uncertainty, [
+            _trace(
+                stage="state",
+                provider=llm_client.provider,
+                model=llm_client.model,
+                status="completed",
+                summary="OpenAI state estimator produced the provisional latent state vector.",
+                started_at=started_at,
+            )
+        ]
+    except Exception as exc:
+        return baseline_state_vector, baseline_uncertainty, [
+            _trace(
+                stage="state",
+                provider=_provider_name(llm_client, agent_provider),
+                model=_model_name(llm_client),
+                status="fallback",
+                summary="Agentic state estimation failed; deterministic state retained.",
+                error=str(exc),
+                started_at=started_at,
+            )
+        ]
+
+
+def _agentic_scenario_options(
+    *,
+    request: OperationalTwinRequest,
+    observations: Sequence[ObservationRecord],
+    state_estimate: StateEstimate,
+    evidence_bundle: EvidenceBundle,
+    baseline_options: Sequence[ScenarioOption],
+    llm_client: JsonAgentClient | None,
+    agent_provider: str,
+) -> tuple[list[ScenarioOption], list[AgentStageTrace]]:
+    if not _llm_enabled(llm_client, agent_provider):
+        return list(baseline_options), [
+            _trace(
+                stage="scenario",
+                provider="deterministic",
+                model=MODEL_VERSIONS["operational_twin_scenario_director"],
+                status="completed",
+                summary="Drafted scenario options with deterministic templates.",
+            )
+        ]
+
+    started_at = datetime.now(UTC)
+    try:
+        payload = llm_client.complete_json(
+            stage="scenario",
+            system=_scenario_system_prompt(),
+            user=json.dumps(
+                {
+                    "mission_id": request.mission_id,
+                    "team_id": request.team_id,
+                    "mode": request.mode,
+                    "training_objective": request.training_objective,
+                    "state_estimate": state_estimate.model_dump(mode="json"),
+                    "evidence_bundle": evidence_bundle.model_dump(mode="json"),
+                    "observations": [item.model_dump(mode="json") for item in observations],
+                    "baseline_options": [item.model_dump(mode="json") for item in baseline_options],
+                },
+                sort_keys=True,
+                default=str,
+            ),
+        )
+        options = _options_from_agent_payload(
+            request=request,
+            evidence_bundle=evidence_bundle,
+            state_estimate=state_estimate,
+            payload=payload,
+        )
+        if len(options) != 3:
+            raise ValueError("scenario director must return exactly three options")
+        return options, [
+            _trace(
+                stage="scenario",
+                provider=llm_client.provider,
+                model=llm_client.model,
+                status="completed",
+                summary="OpenAI scenario director drafted exactly three governed options.",
+                started_at=started_at,
+            )
+        ]
+    except Exception as exc:
+        return list(baseline_options), [
+            _trace(
+                stage="scenario",
+                provider=_provider_name(llm_client, agent_provider),
+                model=_model_name(llm_client),
+                status="fallback",
+                summary="Agentic scenario direction failed; deterministic options retained.",
+                error=str(exc),
+                started_at=started_at,
+            )
+        ]
+
+
+def _agentic_critic_review(
+    *,
+    request: OperationalTwinRequest,
+    observations: Sequence[ObservationRecord],
+    state_estimate: StateEstimate,
+    evidence_bundle: EvidenceBundle,
+    options: Sequence[ScenarioOption],
+    llm_client: JsonAgentClient | None,
+    agent_provider: str,
+) -> tuple[list[ScenarioOption], list[AgentStageTrace]]:
+    if not _llm_enabled(llm_client, agent_provider):
+        return list(options), [
+            _trace(
+                stage="critic",
+                provider="deterministic",
+                model=MODEL_VERSIONS["operational_twin_critic"],
+                status="completed",
+                summary="Applied deterministic safety, evidence, and confidence critic checks.",
+            )
+        ]
+
+    started_at = datetime.now(UTC)
+    try:
+        payload = llm_client.complete_json(
+            stage="critic",
+            system=_critic_system_prompt(),
+            user=json.dumps(
+                {
+                    "mission_id": request.mission_id,
+                    "team_id": request.team_id,
+                    "mode": request.mode,
+                    "state_estimate": state_estimate.model_dump(mode="json"),
+                    "evidence_bundle": evidence_bundle.model_dump(mode="json"),
+                    "observations": [item.model_dump(mode="json") for item in observations],
+                    "options": [item.model_dump(mode="json") for item in options],
+                },
+                sort_keys=True,
+                default=str,
+            ),
+        )
+        reviewed = _apply_agent_critic_reviews(options, payload)
+        return reviewed, [
+            _trace(
+                stage="critic",
+                provider=llm_client.provider,
+                model=llm_client.model,
+                status="completed",
+                summary="OpenAI critic reviewed grounding, risk, option diversity, and human-approval gates.",
+                started_at=started_at,
+            )
+        ]
+    except Exception as exc:
+        return list(options), [
+            _trace(
+                stage="critic",
+                provider=_provider_name(llm_client, agent_provider),
+                model=_model_name(llm_client),
+                status="fallback",
+                summary="Agentic critic failed; deterministic critic statuses retained.",
+                error=str(exc),
+                started_at=started_at,
+            )
+        ]
 
 
 def _artifact_inputs(request: OperationalTwinRequest) -> list[ArtifactInput]:
@@ -654,6 +994,324 @@ def _scenario_options(
             )
         )
     return options
+
+
+def _observations_from_agent_payload(
+    request: OperationalTwinRequest,
+    artifacts: Sequence[ArtifactRecord],
+    payload: dict[str, Any],
+) -> list[ObservationRecord]:
+    items = payload.get("observations")
+    if not isinstance(items, list):
+        return []
+    artifact_ids = {item.artifact_id for item in artifacts}
+    default_sources = [item.artifact_id for item in artifacts[:2]]
+    observations: list[ObservationRecord] = []
+    for index, item in enumerate(items[:12]):
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind", "manual_note"))
+        if kind not in _OBSERVATION_KINDS:
+            kind = "manual_note"
+        content = item.get("content")
+        if not isinstance(content, dict):
+            content = {"summary": str(item.get("summary", ""))}
+        if not _summary_text(content).strip():
+            continue
+        raw_source_ids = item.get("source_artifact_ids")
+        if isinstance(raw_source_ids, list):
+            source_ids = [
+                str(source_id)
+                for source_id in raw_source_ids
+                if str(source_id) in artifact_ids
+            ]
+        else:
+            source_ids = []
+        if not source_ids:
+            source_ids = default_sources
+        if not source_ids:
+            continue
+        subject_ref = _subject_ref_from_agent_item(item, request)
+        observations.append(
+            ObservationRecord(
+                observation_id=str(item.get("observation_id") or f"obs-agent-{uuid4()}"),
+                mission_id=request.mission_id,
+                subject_ref=subject_ref,
+                source_artifact_ids=source_ids,
+                kind=kind,  # type: ignore[arg-type]
+                content=content,
+                timestamp_utc=datetime.now(UTC),
+                confidence=_clamp(_float_or_none(item.get("confidence")) or 0.72, low=0.20, high=0.98),
+                controls=request.controls,
+            )
+        )
+    return observations
+
+
+def _subject_ref_from_agent_item(
+    item: dict[str, Any],
+    request: OperationalTwinRequest,
+) -> TwinSubjectRef | None:
+    subject = item.get("subject_ref")
+    if not isinstance(subject, dict):
+        return TwinSubjectRef(subject_type="team", subject_id=request.team_id)
+    subject_type = str(subject.get("subject_type", "team"))
+    subject_id = str(subject.get("subject_id", request.team_id))
+    if subject_type not in {"person", "team", "mission", "environment"}:
+        subject_type = "team"
+    return TwinSubjectRef(subject_type=subject_type, subject_id=subject_id)  # type: ignore[arg-type]
+
+
+def _state_vector_from_agent_payload(
+    payload: dict[str, Any],
+    fallback: OperationalStateVector,
+) -> OperationalStateVector:
+    raw = payload.get("state_vector")
+    if not isinstance(raw, dict):
+        raw = payload
+    fallback_payload = fallback.model_dump(mode="json")
+    values = {
+        key: _bounded_state_value(raw.get(key), fallback_payload[key], low=-1.0 if key == "training_challenge_gap" else 0.0)
+        for key in (
+            "fatigue_burden",
+            "situational_clarity",
+            "cohesion",
+            "leader_decision_quality",
+            "mission_tempo_risk",
+            "training_challenge_gap",
+        )
+    }
+    return OperationalStateVector(**values)
+
+
+def _uncertainty_from_agent_payload(
+    payload: dict[str, Any],
+    fallback: StateUncertainty,
+) -> StateUncertainty:
+    raw = payload.get("uncertainty")
+    if not isinstance(raw, dict):
+        return fallback
+    overall = _clamp(_float_or_none(raw.get("overall")) or fallback.overall, low=0.05, high=0.95)
+    by_field_payload = raw.get("by_field")
+    by_field: dict[str, float] = {}
+    if isinstance(by_field_payload, dict):
+        for key, fallback_value in fallback.by_field.items():
+            by_field[key] = _clamp(
+                _float_or_none(by_field_payload.get(key)) or fallback_value,
+                low=0.05,
+                high=0.95,
+            )
+    else:
+        by_field = dict(fallback.by_field)
+    return StateUncertainty(
+        overall=round(overall, 3),
+        by_field={key: round(value, 3) for key, value in by_field.items()},
+    )
+
+
+def _options_from_agent_payload(
+    *,
+    request: OperationalTwinRequest,
+    evidence_bundle: EvidenceBundle,
+    state_estimate: StateEstimate,
+    payload: dict[str, Any],
+) -> list[ScenarioOption]:
+    raw_options = payload.get("scenario_options") or payload.get("options")
+    if not isinstance(raw_options, list):
+        return []
+    options: list[ScenarioOption] = []
+    for index, item in enumerate(raw_options[:3]):
+        if not isinstance(item, dict):
+            continue
+        risk_score = _clamp(_float_or_none(item.get("risk_score")) or _option_risk(index, state_estimate.state_vector))
+        confidence = _clamp(_float_or_none(item.get("confidence")) or (1.0 - state_estimate.uncertainty.overall), low=0.05, high=0.95)
+        critic_status, critic_reasons = _critic_status(
+            evidence_bundle=evidence_bundle,
+            risk_score=risk_score,
+            confidence=confidence,
+            state_vector=state_estimate.state_vector,
+        )
+        predicted = item.get("predicted_effect")
+        if not isinstance(predicted, dict):
+            predicted = {}
+        target_state_change = str(
+            predicted.get("target_state_change")
+            or item.get("target_state_change")
+            or "Improve the targeted mission or training state."
+        )
+        options.append(
+            ScenarioOption(
+                scenario_option_id=str(item.get("scenario_option_id") or f"opt-{uuid4()}"),
+                mission_id=request.mission_id,
+                option_type=_option_type(request.mode, index),  # type: ignore[arg-type]
+                title=str(item.get("title") or f"Agent option {index + 1}"),
+                narrative=str(item.get("narrative") or item.get("proposed_action") or ""),
+                predicted_effect=ScenarioPredictedEffect(
+                    target_state_change=target_state_change,
+                    expected_learning_value=_optional_bounded_float(
+                        predicted.get("expected_learning_value")
+                        if "expected_learning_value" in predicted
+                        else item.get("expected_learning_value")
+                    )
+                    if request.mode == "training"
+                    else None,
+                    expected_mission_benefit=_optional_bounded_float(
+                        predicted.get("expected_mission_benefit")
+                        if "expected_mission_benefit" in predicted
+                        else item.get("expected_mission_benefit")
+                    )
+                    if request.mode == "mission"
+                    else None,
+                ),
+                risk_score=round(risk_score, 3),
+                confidence=round(confidence, 3),
+                critic_status=critic_status,
+                critic_reasons=critic_reasons,
+                evidence_bundle_id=evidence_bundle.bundle_id,
+                status="draft",
+                controls=request.controls,
+            )
+        )
+    return [item for item in options if item.narrative.strip()]
+
+
+def _apply_agent_critic_reviews(
+    options: Sequence[ScenarioOption],
+    payload: dict[str, Any],
+) -> list[ScenarioOption]:
+    reviews = payload.get("reviews")
+    if not isinstance(reviews, list):
+        return list(options)
+    updated = list(options)
+    for raw_review in reviews:
+        if not isinstance(raw_review, dict):
+            continue
+        parsed_index = _float_or_none(raw_review.get("index"))
+        index = int(parsed_index) if parsed_index is not None else -1
+        if index < 0 or index >= len(updated):
+            continue
+        option = updated[index]
+        agent_status = str(raw_review.get("critic_status", option.critic_status))
+        if agent_status not in _CRITIC_STATUSES:
+            agent_status = option.critic_status
+        merged_status = _more_restrictive_status(option.critic_status, agent_status)
+        reasons = raw_review.get("critic_reasons") or raw_review.get("reasons")
+        if isinstance(reasons, list):
+            merged_reasons = [str(reason) for reason in reasons if str(reason).strip()]
+        else:
+            merged_reasons = []
+        if not merged_reasons:
+            merged_reasons = list(option.critic_reasons)
+        agent_risk = _float_or_none(raw_review.get("risk_score"))
+        agent_confidence = _float_or_none(raw_review.get("confidence"))
+        updated[index] = option.model_copy(
+            update={
+                "critic_status": merged_status,
+                "critic_reasons": merged_reasons,
+                "risk_score": round(max(option.risk_score, _clamp(agent_risk or option.risk_score)), 3),
+                "confidence": round(min(option.confidence, _clamp(agent_confidence or option.confidence)), 3),
+            }
+        )
+    return updated
+
+
+def _trace(
+    *,
+    stage: str,
+    provider: str,
+    model: str,
+    status: str,
+    summary: str,
+    error: str | None = None,
+    started_at: datetime | None = None,
+) -> AgentStageTrace:
+    return AgentStageTrace(
+        stage=stage,
+        provider=provider,
+        model=model,
+        status=status,  # type: ignore[arg-type]
+        summary=summary,
+        error=error,
+        started_at=started_at or datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+    )
+
+
+def _llm_enabled(llm_client: JsonAgentClient | None, agent_provider: str) -> bool:
+    return llm_client is not None and agent_provider in {"auto", "openai"}
+
+
+def _provider_name(llm_client: JsonAgentClient | None, agent_provider: str) -> str:
+    if llm_client is not None:
+        return llm_client.provider
+    return agent_provider
+
+
+def _model_name(llm_client: JsonAgentClient | None) -> str:
+    if llm_client is not None:
+        return llm_client.model
+    return "unconfigured"
+
+
+def _bounded_state_value(value: Any, fallback: float, *, low: float = 0.0) -> float:
+    parsed = _float_or_none(value)
+    if parsed is None:
+        parsed = fallback
+    return round(_clamp(parsed, low=low, high=1.0), 3)
+
+
+def _optional_bounded_float(value: Any) -> float | None:
+    parsed = _float_or_none(value)
+    if parsed is None:
+        return None
+    return round(_clamp(parsed), 3)
+
+
+def _more_restrictive_status(current: str, proposed: str) -> str:
+    order = {"pass": 0, "modify": 1, "escalate": 2, "reject": 3}
+    return proposed if order[proposed] > order[current] else current
+
+
+def _perception_system_prompt() -> str:
+    return (
+        "You are the Perception Agent for a governed mission/training operational twin. "
+        "Extract observable atomic facts only. Do not infer motives, psychology, guilt, "
+        "fitness, protected attributes, or personnel judgments. Return JSON with an "
+        "'observations' array. Each item must include kind, summary or content, "
+        "source_artifact_ids, confidence, and optional subject_ref."
+    )
+
+
+def _state_system_prompt() -> str:
+    return (
+        "You are the Cognitive State Estimator Agent. Estimate only provisional latent "
+        "state from observable evidence. Return JSON with state_vector and uncertainty. "
+        "State vector keys are fatigue_burden, situational_clarity, cohesion, "
+        "leader_decision_quality, mission_tempo_risk, and training_challenge_gap. "
+        "All values except training_challenge_gap are 0..1; training_challenge_gap is -1..1. "
+        "Keep uncertainty calibrated and avoid fixed-talent claims."
+    )
+
+
+def _scenario_system_prompt() -> str:
+    return (
+        "You are the Scenario Director Agent for a human-approved operational twin. "
+        "Return exactly three distinct options in JSON under scenario_options. In "
+        "training mode, options are scenario injects; in mission mode, options are "
+        "advisory rehearsal variants or COAs. Each option must include title, narrative, "
+        "predicted_effect.target_state_change, risk_score, and confidence. Do not approve "
+        "anything and do not bypass human review."
+    )
+
+
+def _critic_system_prompt() -> str:
+    return (
+        "You are the Safety and Doctrine Critic Agent. Review options for evidence "
+        "grounding, duplicate logic, unsafe escalation, fatigue overload, classification "
+        "or control issues, and automation-bias risk. Return JSON with reviews. Each "
+        "review has index, critic_status as pass/modify/escalate/reject, critic_reasons, "
+        "risk_score, and confidence. Never weaken deterministic safety gates."
+    )
 
 
 def _option_templates(target: str, mode: str) -> tuple[dict[str, str | float], ...]:

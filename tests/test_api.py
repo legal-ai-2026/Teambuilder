@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from fastapi import HTTPException
@@ -85,6 +87,117 @@ from system2.shared_data import (
     build_context_update_events,
     build_graph_update_events,
 )
+
+
+class FakeJsonAgentClient:
+    provider = "openai"
+    model = "gpt-5.4-mini"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def complete_json(self, *, stage: str, system: str, user: str) -> dict[str, object]:
+        self.calls.append(stage)
+        payload = json.loads(user)
+        artifacts = payload.get("artifacts", [])
+        artifact_id = artifacts[0]["artifact_id"] if artifacts else "art-fake"
+        if stage == "perception":
+            return {
+                "observations": [
+                    {
+                        "kind": "voice_fact",
+                        "source_artifact_ids": [artifact_id],
+                        "content": {
+                            "summary": "Agent extracted a second-order terrain and support timing cue."
+                        },
+                        "confidence": 0.91,
+                    }
+                ]
+            }
+        if stage == "state":
+            return {
+                "state_vector": {
+                    "fatigue_burden": 0.69,
+                    "situational_clarity": 0.41,
+                    "cohesion": 0.63,
+                    "leader_decision_quality": 0.52,
+                    "mission_tempo_risk": 0.67,
+                    "training_challenge_gap": -0.28,
+                },
+                "uncertainty": {
+                    "overall": 0.19,
+                    "by_field": {
+                        "fatigue_burden": 0.18,
+                        "situational_clarity": 0.19,
+                        "cohesion": 0.24,
+                        "leader_decision_quality": 0.22,
+                        "mission_tempo_risk": 0.20,
+                        "training_challenge_gap": 0.25,
+                    },
+                },
+            }
+        if stage == "scenario":
+            return {
+                "scenario_options": [
+                    {
+                        "title": "Agent primary systems-thinking inject",
+                        "narrative": "Inject delayed comms relay and flank civilian movement while holding physical difficulty steady.",
+                        "predicted_effect": {
+                            "target_state_change": "Improve systems thinking under bounded fatigue.",
+                            "expected_learning_value": 0.84,
+                        },
+                        "risk_score": 0.46,
+                        "confidence": 0.81,
+                    },
+                    {
+                        "title": "Agent safer isolation drill",
+                        "narrative": "Run a map-back drill linking terrain, timing, support, and civilian movement.",
+                        "predicted_effect": {
+                            "target_state_change": "Isolate the systems-thinking sub-skill.",
+                            "expected_learning_value": 0.68,
+                        },
+                        "risk_score": 0.24,
+                        "confidence": 0.78,
+                    },
+                    {
+                        "title": "Agent transfer branch",
+                        "narrative": "Transfer the same second-order reasoning to a casualty evacuation branch.",
+                        "predicted_effect": {
+                            "target_state_change": "Test transfer of second-order reasoning.",
+                            "expected_learning_value": 0.72,
+                        },
+                        "risk_score": 0.38,
+                        "confidence": 0.76,
+                    },
+                ]
+            }
+        if stage == "critic":
+            return {
+                "reviews": [
+                    {
+                        "index": 0,
+                        "critic_status": "modify",
+                        "critic_reasons": ["Keep the inject targeted; do not raise general difficulty."],
+                        "risk_score": 0.48,
+                        "confidence": 0.79,
+                    },
+                    {
+                        "index": 1,
+                        "critic_status": "pass",
+                        "critic_reasons": ["Low-risk isolation path is grounded in the evidence bundle."],
+                        "risk_score": 0.24,
+                        "confidence": 0.78,
+                    },
+                    {
+                        "index": 2,
+                        "critic_status": "pass",
+                        "critic_reasons": ["Transfer option is differentiated from the primary option."],
+                        "risk_score": 0.38,
+                        "confidence": 0.76,
+                    },
+                ]
+            }
+        return {}
 
 
 def test_score_returns_roster_and_audit() -> None:
@@ -310,6 +423,56 @@ def test_operational_twin_agent_loop_with_synthetic_data(tmp_path) -> None:
     assert sink.update_events[-1]["entity_type"] == "operational_twin_option"
 
 
+def test_operational_twin_uses_openai_agent_runtime_when_configured(tmp_path) -> None:
+    fake_client = FakeJsonAgentClient()
+    service = OperationalTwinService(
+        audit_log=AuditLog(tmp_path / "audit.jsonl"),
+        shared_data_sink=InMemorySharedDataSink(),
+        agent_provider="openai",
+        llm_client=fake_client,
+    )
+
+    payload = service.run(
+        OperationalTwinRequest(
+            mission_id="agentic-openai-demo",
+            operator_id="instructor-1",
+            mode="training",
+            team_id="alpha-agent",
+            artifacts=[
+                ArtifactInput(
+                    kind="audio",
+                    content=(
+                        "Leader lost the terrain, timing, support, and civilian "
+                        "movement relationship after a delayed comms relay."
+                    ),
+                ),
+                ArtifactInput(
+                    kind="sleep_food_log",
+                    content="Median team sleep was 4.3 hours.",
+                    metadata={"sleep_hours": 4.3},
+                ),
+            ],
+        )
+    )
+
+    assert fake_client.calls == ["perception", "state", "scenario", "critic"]
+    assert [trace.stage for trace in payload.agent_trace] == [
+        "perception",
+        "state",
+        "scenario",
+        "critic",
+    ]
+    assert all(trace.provider == "openai" for trace in payload.agent_trace)
+    assert all(trace.status == "completed" for trace in payload.agent_trace)
+    assert payload.state_estimate.state_vector.fatigue_burden == pytest.approx(0.69)
+    assert payload.state_estimate.uncertainty.overall == pytest.approx(0.19)
+    assert len(payload.scenario_options) == 3
+    assert payload.scenario_options[0].title == "Agent primary systems-thinking inject"
+    assert payload.scenario_options[0].critic_status == "modify"
+    assert payload.scenario_options[0].risk_score == pytest.approx(0.48)
+    assert all(item.status == "draft" for item in payload.scenario_options)
+
+
 def test_operational_twin_api_round_trip_uses_draft_then_approval() -> None:
     payload = create_operational_twin_run(
         OperationalTwinRequest(
@@ -488,6 +651,9 @@ def test_infra_settings_default_to_local_backends() -> None:
     assert settings.api_key is None
     assert settings.admin_api_key is None
     assert settings.cors_allowed_origins == ()
+    assert settings.agentic_provider == "auto"
+    assert settings.openai_api_key is None
+    assert settings.openai_model == "gpt-5.4-mini"
 
 
 def test_infra_settings_treats_blank_security_values_as_unset() -> None:
@@ -509,6 +675,30 @@ def test_infra_settings_uses_service_key_as_admin_fallback() -> None:
 
     assert settings.api_key == "service-secret"
     assert settings.admin_api_key == "service-secret"
+
+
+def test_infra_settings_parses_openai_agentic_runtime() -> None:
+    settings = InfraSettings.from_env(
+        {
+            "SYSTEM2_AGENTIC_PROVIDER": "openai",
+            "OPENAI_API_KEY": "test-openai-key",
+            "OPENAI_MODEL": "gpt-5.4-mini",
+            "OPENAI_BASE_URL": "https://api.openai.example/v1",
+        }
+    )
+
+    status = settings.status()
+
+    assert settings.agentic_provider == "openai"
+    assert settings.openai_api_key == "test-openai-key"
+    assert settings.openai_model == "gpt-5.4-mini"
+    assert settings.openai_base_url == "https://api.openai.example/v1"
+    assert status["agentic_runtime"] == {
+        "provider": "openai",
+        "openai_configured": True,
+        "openai_model": "gpt-5.4-mini",
+        "openai_base_url": "https://api.openai.example/v1",
+    }
 
 
 def test_api_key_guard_allows_unconfigured_local_mode() -> None:
