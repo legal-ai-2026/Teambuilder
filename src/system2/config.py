@@ -49,6 +49,19 @@ def _strip_env_value(value: str) -> str:
     return value
 
 
+def _csv_values(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _optional_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def _backend(value: str | None, *, default: str, kind: str) -> str:
     selected = (value or default).strip().lower()
     allowed = _BACKENDS[kind]
@@ -97,6 +110,9 @@ class InfraSettings:
     retrieval_backend: str
     graph_backend: str
     shared_data_backend: str
+    api_key: str | None
+    admin_api_key: str | None
+    cors_allowed_origins: tuple[str, ...]
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "InfraSettings":
@@ -106,6 +122,8 @@ class InfraSettings:
         database_url = normalize_postgres_url(source.get("DATABASE_URL"))
         pgvector_url = normalize_postgres_url(source.get("PGVECTOR_CONNECTION_STRING") or database_url)
         pgvector_enabled = _env_bool(source.get("PGVECTOR_ENABLED"), default=source.get("PGVECTOR_CONNECTION_STRING") is not None)
+        api_key = _optional_value(source.get("SYSTEM2_API_KEY"))
+        admin_api_key = _optional_value(source.get("SYSTEM2_ADMIN_API_KEY")) or api_key
         return cls(
             database_url=database_url,
             pgvector_url=pgvector_url,
@@ -153,6 +171,9 @@ class InfraSettings:
                 default="postgres" if database_url else "memory",
                 kind="shared_data",
             ),
+            api_key=api_key,
+            admin_api_key=admin_api_key,
+            cors_allowed_origins=_csv_values(source.get("SYSTEM2_CORS_ORIGINS")),
         )
 
     def status(self) -> dict[str, object]:
@@ -181,5 +202,10 @@ class InfraSettings:
                 "retrieval": self.retrieval_backend,
                 "graph": self.graph_backend,
                 "shared_data": self.shared_data_backend,
+            },
+            "security": {
+                "api_key_required": self.api_key is not None,
+                "admin_api_key_required": self.admin_api_key is not None,
+                "cors_allowed_origins": list(self.cors_allowed_origins),
             },
         }

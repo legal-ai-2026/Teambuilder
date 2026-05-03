@@ -59,6 +59,9 @@ RETRIEVAL_BACKEND=pgvector
 GRAPH_BACKEND=falkordb
 SHARED_DATA_BACKEND=postgres
 SYSTEM2_AUDIT_LOG=/var/log/system2/audit.jsonl
+SYSTEM2_CORS_ORIGINS=https://frontend.example.mil
+SYSTEM2_API_KEY=replace-me-service-key
+SYSTEM2_ADMIN_API_KEY=replace-me-admin-key
 ```
 
 Postgres should remain the canonical store. Redis should be treated as
@@ -71,6 +74,13 @@ in an ignored path such as `.env.infra` and point the app at it:
 ```bash
 SYSTEM2_ENV_FILE=.env.infra uvicorn system2.api:app --reload
 ```
+
+API-key protection and CORS are opt-in. If `SYSTEM2_API_KEY` is unset, local
+workflow routes are open. When it is set, protected routes accept either
+`X-API-Key: <key>` or `Authorization: Bearer <key>`. `/health` and
+`/v1/healthz` remain public. `/admin/disable` and `/admin/enable` require
+`SYSTEM2_ADMIN_API_KEY`; if no admin key is provided, they fall back to
+`SYSTEM2_API_KEY`.
 
 ## Quick Start
 
@@ -128,6 +138,7 @@ python scripts/smoke_infra.py --env-file .env.infra --migrate
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/adaptations \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{
     "mission_id": "raid-tonight",
     "instructor_id": "instructor-1",
@@ -154,6 +165,7 @@ remain advisory until an instructor approves or rejects one.
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/adaptations/ADAPTATION_ID/approval \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{
     "recommendation_id": "RECOMMENDATION_ID",
     "decision": "approved",
@@ -167,6 +179,7 @@ curl -X POST http://127.0.0.1:8000/v1/adaptations/ADAPTATION_ID/approval \
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/score \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{"mission_id":"raid-tonight","candidate_count":80}'
 ```
 
@@ -179,6 +192,7 @@ populated:
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/score \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{"mission_id":"raid-tonight","candidate_pool_id":"pool-2026-05-02-a"}'
 ```
 
@@ -191,6 +205,7 @@ synthetic candidates and marks that fallback in `trace.source_refs`.
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/agent-runs \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{
     "score_request": {
       "mission_id": "raid-tonight",
@@ -212,6 +227,7 @@ Record the human decision after review:
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/agent-runs/RUN_ID/approval \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{
     "decision": "approved",
     "approver_id": "commander-1",
@@ -228,6 +244,7 @@ Load retrieval context with embeddings generated outside this service:
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/context/chunks \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{
     "chunks": [{
       "chunk_id": "sop-001",
@@ -245,6 +262,7 @@ Load derived graph facts:
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/graph/facts \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{
     "facts": [{
       "subject": "raid-tonight",

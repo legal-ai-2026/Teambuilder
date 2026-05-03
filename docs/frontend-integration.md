@@ -37,9 +37,32 @@ http://127.0.0.1:8000/openapi.json
 All request models are strict. Unknown JSON fields are rejected. Timestamps are
 ISO 8601 strings. Numeric scores and risks are usually `0.0` to `1.0`.
 
-Production integration must add authentication, authorization, and CORS at the
-gateway, service mesh, or FastAPI middleware layer. This package currently does
-not enforce auth and does not configure CORS.
+## Authentication And CORS
+
+Local development can run without API keys. In shared or deployed environments,
+configure the backend with:
+
+```env
+SYSTEM2_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+SYSTEM2_API_KEY=replace-me-service-key
+SYSTEM2_ADMIN_API_KEY=replace-me-admin-key
+```
+
+When `SYSTEM2_API_KEY` is set, protected routes require one of these headers:
+
+```http
+X-API-Key: replace-me-service-key
+Authorization: Bearer replace-me-service-key
+```
+
+`GET /health` and `GET /v1/healthz` stay public. `/admin/disable` and
+`/admin/enable` require `SYSTEM2_ADMIN_API_KEY`; if that is unset, the service
+uses `SYSTEM2_API_KEY` as the admin fallback.
+
+For a purely browser-based hackathon frontend, the API key is only a coarse
+demo gate because browser secrets are visible to users. For production, put this
+service behind a gateway or backend-for-frontend that handles user identity,
+role-based authorization, and short-lived session tokens.
 
 ## Frontend Responsibilities
 
@@ -868,10 +891,12 @@ interface ScenarioInjectRecommendation {
 
 ```ts
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const apiKey = import.meta.env.VITE_SYSTEM2_API_KEY;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
+      ...(apiKey ? {"x-api-key": apiKey} : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -982,16 +1007,15 @@ For hackathon/demo:
 
 For production:
 
-- Add auth and role-based access control.
-- Add CORS policy for the frontend origin.
+- Add user identity and role-based access control at the gateway or BFF layer.
 - Add retention and purpose limitations for developmental evidence.
 - Add explicit frontend affordances for source refs, uncertainty, and human
   approval.
 
 ## Known Backend Gaps The Frontend Must Handle
 
-- No built-in auth/authz.
-- No built-in CORS middleware.
+- Built-in auth is API-key only; it does not provide user identity, roles, or
+  per-mission authorization.
 - Direct `/v1/score` does not yet write `decision_snapshots`.
 - Kill-switch changes do not yet write `entity_update_events`.
 - Training observation and deployment outcome enrichment require shared

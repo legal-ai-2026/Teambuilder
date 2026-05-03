@@ -67,6 +67,7 @@ from system2.registry import MODEL_VERSIONS
 from system2.graph import LocalGraphContextProvider, cypher_identifier, cypher_quote, parse_falkordb_rows
 from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, PgVectorContextRetriever, embedding_literal
 from system2.scoring import feature_hash, role_fit
+from system2.security import ApiKeyGuard
 from system2.service import SelectionService
 from system2.shared_data import (
     SHARED_DATA_SCHEMA_SQL,
@@ -246,6 +247,9 @@ def test_infra_settings_redacts_connection_urls() -> None:
             "GRAPH_BACKEND": "falkordb",
             "SHARED_DATA_BACKEND": "postgres",
             "SYSTEM2_AUDIT_LOG": "/var/log/system2/audit.jsonl",
+            "SYSTEM2_CORS_ORIGINS": "http://localhost:3000, http://127.0.0.1:3000",
+            "SYSTEM2_API_KEY": "service-secret",
+            "SYSTEM2_ADMIN_API_KEY": "admin-secret",
         }
     )
 
@@ -267,6 +271,14 @@ def test_infra_settings_redacts_connection_urls() -> None:
         "graph": "falkordb",
         "shared_data": "postgres",
     }
+    assert settings.cors_allowed_origins == ("http://localhost:3000", "http://127.0.0.1:3000")
+    assert settings.api_key == "service-secret"
+    assert settings.admin_api_key == "admin-secret"
+    assert status["security"] == {
+        "api_key_required": True,
+        "admin_api_key_required": True,
+        "cors_allowed_origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+    }
     assert redact_url(None) is None
 
 
@@ -281,6 +293,57 @@ def test_infra_settings_default_to_local_backends() -> None:
     assert settings.retrieval_backend == "local"
     assert settings.graph_backend == "local"
     assert settings.shared_data_backend == "memory"
+    assert settings.api_key is None
+    assert settings.admin_api_key is None
+    assert settings.cors_allowed_origins == ()
+
+
+def test_infra_settings_treats_blank_security_values_as_unset() -> None:
+    settings = InfraSettings.from_env(
+        {
+            "SYSTEM2_API_KEY": "   ",
+            "SYSTEM2_ADMIN_API_KEY": "",
+            "SYSTEM2_CORS_ORIGINS": " , ",
+        }
+    )
+
+    assert settings.api_key is None
+    assert settings.admin_api_key is None
+    assert settings.cors_allowed_origins == ()
+
+
+def test_infra_settings_uses_service_key_as_admin_fallback() -> None:
+    settings = InfraSettings.from_env({"SYSTEM2_API_KEY": "service-secret"})
+
+    assert settings.api_key == "service-secret"
+    assert settings.admin_api_key == "service-secret"
+
+
+def test_api_key_guard_allows_unconfigured_local_mode() -> None:
+    guard = ApiKeyGuard()
+
+    guard.require_api_key()
+    guard.require_admin_key()
+
+
+def test_api_key_guard_accepts_x_api_key_and_bearer_token() -> None:
+    guard = ApiKeyGuard(api_key="service-secret", admin_api_key="admin-secret")
+
+    guard.require_api_key(x_api_key="service-secret")
+    guard.require_api_key(authorization="Bearer service-secret")
+    guard.require_admin_key(x_api_key="admin-secret")
+
+
+def test_api_key_guard_rejects_missing_or_wrong_keys() -> None:
+    guard = ApiKeyGuard(api_key="service-secret", admin_api_key="admin-secret")
+
+    with pytest.raises(HTTPException) as missing_service:
+        guard.require_api_key()
+    with pytest.raises(HTTPException) as wrong_admin:
+        guard.require_admin_key(x_api_key="service-secret")
+
+    assert missing_service.value.status_code == 401
+    assert wrong_admin.value.status_code == 401
 
 
 def test_infra_settings_supports_graph_stack_env_shape() -> None:

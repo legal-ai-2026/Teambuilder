@@ -18,6 +18,21 @@ To load a generated infrastructure env file without exporting every variable:
 SYSTEM2_ENV_FILE=.env.infra uvicorn system2.api:app --reload --port 8002
 ```
 
+For shared frontend or deployed environments, set CORS and API-key controls in
+that env file:
+
+```env
+SYSTEM2_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+SYSTEM2_API_KEY=replace-me-service-key
+SYSTEM2_ADMIN_API_KEY=replace-me-admin-key
+```
+
+If `SYSTEM2_API_KEY` is unset, local workflow routes remain open. When it is
+set, callers must send `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+Health routes stay public. Admin enable/disable routes require
+`SYSTEM2_ADMIN_API_KEY`, falling back to `SYSTEM2_API_KEY` when no separate
+admin key is configured.
+
 To verify the infrastructure first:
 
 ```bash
@@ -35,6 +50,7 @@ Score:
 ```bash
 curl -X POST http://127.0.0.1:8002/v1/score \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{"mission_id":"raid-tonight","candidate_count":80,"seed":42}'
 ```
 
@@ -43,6 +59,7 @@ Adapt live training:
 ```bash
 curl -X POST http://127.0.0.1:8002/v1/adaptations \
   -H 'content-type: application/json' \
+  -H "x-api-key: ${SYSTEM2_API_KEY}" \
   -d '{
     "mission_id": "raid-tonight",
     "instructor_id": "instructor-1",
@@ -120,9 +137,18 @@ mission adaptation loop, and `/v1/adaptations/{adaptation_id}/approval` records
 instructor approval or rejection. `/v1/agent-runs` starts the roster
 recommendation workflow, `/v1/agent-runs/{run_id}` fetches the stored run, and
 `/v1/agent-runs/{run_id}/approval` records approval or rejection. The context
-and graph ingestion routes populate pgvector/FalkorDB-backed context. Runtime
-errors from the direct scoring service become HTTP `423` when the engine is
-disabled; assignment failures become HTTP `422`.
+and graph ingestion routes populate pgvector/FalkorDB-backed context. CORS and
+API-key protection are configured from `InfraSettings`; health routes are
+public, workflow routes use the service key, and admin routes use the admin key.
+Runtime errors from the direct scoring service become HTTP `423` when the
+engine is disabled; assignment failures become HTTP `422`.
+
+`security.py`
+
+Implements the coarse API-key guard used by FastAPI dependencies. It accepts
+`X-API-Key` and `Authorization: Bearer ...`, treats blank configured keys as
+unset, and lets the admin key fall back to the service key for simple
+deployments.
 
 `agent_orchestrator.py`
 
