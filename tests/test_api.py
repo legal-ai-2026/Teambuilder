@@ -9,6 +9,7 @@ from system2.api import (
     enable,
     get_agent_run,
     ingest_context_chunks,
+    ingest_graph_facts,
     record_agent_run_approval,
     score,
     score_v1,
@@ -28,11 +29,13 @@ from system2.models import (
     AgentRunStatus,
     ContextChunkInput,
     ContextIngestRequest,
+    GraphFactInput,
+    GraphIngestRequest,
     ScoreRequest,
 )
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
-from system2.graph import LocalGraphContextProvider, cypher_quote, parse_falkordb_rows
+from system2.graph import LocalGraphContextProvider, cypher_identifier, cypher_quote, parse_falkordb_rows
 from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, embedding_literal
 from system2.scoring import feature_hash, role_fit
 from system2.service import SelectionService
@@ -236,6 +239,44 @@ def test_local_graph_context_provider_returns_request_facts() -> None:
     assert facts[0].subject == "mission-1"
     assert facts[0].predicate == "uses_role_source"
     assert cypher_quote("a'b") == "'a\\'b'"
+
+
+def test_local_graph_context_provider_ingests_facts() -> None:
+    provider = LocalGraphContextProvider()
+
+    count = provider.upsert(
+        [
+            GraphFactInput(
+                subject="mission-1",
+                predicate="requires_skill",
+                object="casevac",
+                metadata={"source": "operator"},
+            )
+        ]
+    )
+    facts = provider.mission_context(
+        AgentRunRequest(score_request=ScoreRequest(mission_id="mission-1", candidate_count=80))
+    )
+
+    assert count == 1
+    assert any(fact.predicate == "requires_skill" and fact.object == "casevac" for fact in facts)
+    assert cypher_identifier("requires-skill") == "REQUIRES_SKILL"
+
+
+def test_graph_ingest_api_uses_configured_provider() -> None:
+    result = ingest_graph_facts(
+        GraphIngestRequest(
+            facts=[
+                GraphFactInput(
+                    subject="mission-api",
+                    predicate="requires_role",
+                    object="medic",
+                )
+            ]
+        )
+    )
+
+    assert result.fact_count == 1
 
 
 def test_falkordb_row_parser_handles_graph_query_rows() -> None:

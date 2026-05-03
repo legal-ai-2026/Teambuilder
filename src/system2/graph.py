@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .models import AgentRunRequest
+from .models import AgentRunRequest, GraphFactInput
 
 
 @dataclass(frozen=True)
@@ -18,8 +21,14 @@ class GraphContextProvider(Protocol):
     def mission_context(self, request: AgentRunRequest) -> list[GraphFact]:
         ...
 
+    def upsert(self, facts: Sequence[GraphFactInput]) -> int:
+        ...
+
 
 class LocalGraphContextProvider:
+    def __init__(self, facts: Sequence[GraphFact] | None = None) -> None:
+        self._facts = list(facts or [])
+
     def mission_context(self, request: AgentRunRequest) -> list[GraphFact]:
         score_request = request.score_request
         roles = score_request.roles or []
@@ -40,7 +49,20 @@ class LocalGraphContextProvider:
                     metadata={"slot_id": role.slot_id, "required_mos": role.required_mos},
                 )
             )
-        return facts
+        stored = [fact for fact in self._facts if fact.subject == score_request.mission_id]
+        return [*facts, *stored]
+
+    def upsert(self, facts: Sequence[GraphFactInput]) -> int:
+        existing = {(fact.subject, fact.predicate, fact.object): fact for fact in self._facts}
+        for fact in facts:
+            existing[(fact.subject, fact.predicate, fact.object)] = GraphFact(
+                subject=fact.subject,
+                predicate=fact.predicate,
+                object=fact.object,
+                metadata={**fact.metadata, "backend": "local"},
+            )
+        self._facts = list(existing.values())
+        return len(facts)
 
 
 class FalkorDBGraphContextProvider:
@@ -67,6 +89,18 @@ class FalkorDBGraphContextProvider:
         raw = self._redis().execute_command("GRAPH.QUERY", self.graph_name, query)
         return parse_falkordb_rows(raw)
 
+    def upsert(self, facts: Sequence[GraphFactInput]) -> int:
+        client = self._redis()
+        for fact in facts:
+            query = (
+                f"MERGE (subject:System2Entity {{id: {cypher_quote(fact.subject)}}}) "
+                f"MERGE (object:System2Entity {{id: {cypher_quote(fact.object)}}}) "
+                f"MERGE (subject)-[rel:{cypher_identifier(fact.predicate)}]->(object) "
+                f"SET rel.metadata_json = {cypher_quote(json.dumps(fact.metadata, sort_keys=True))}"
+            )
+            client.execute_command("GRAPH.QUERY", self.graph_name, query)
+        return len(facts)
+
     def _redis(self) -> Any:
         if self._client is not None:
             return self._client
@@ -85,6 +119,14 @@ class FalkorDBGraphContextProvider:
 
 def cypher_quote(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def cypher_identifier(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_]", "_", value.strip()).upper()
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    if not normalized or normalized[0].isdigit():
+        raise ValueError("Cypher identifiers must contain letters and cannot start with a digit")
+    return normalized
 
 
 def parse_falkordb_rows(raw: object) -> list[GraphFact]:

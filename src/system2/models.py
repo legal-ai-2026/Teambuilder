@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -204,6 +204,22 @@ class ContextIngestResult(StrictBaseModel):
     backend: str
     chunk_count: int
     chunk_ids: list[str]
+
+
+class GraphFactInput(StrictBaseModel):
+    subject: str = Field(min_length=1)
+    predicate: str = Field(min_length=1)
+    object: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphIngestRequest(StrictBaseModel):
+    facts: list[GraphFactInput] = Field(min_length=1)
+
+
+class GraphIngestResult(StrictBaseModel):
+    backend: str
+    fact_count: int
 
 
 class AgentRun(StrictBaseModel):

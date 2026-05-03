@@ -11,6 +11,8 @@ from .models import (
     AgentRunRequest,
     ContextIngestRequest,
     ContextIngestResult,
+    GraphIngestRequest,
+    GraphIngestResult,
     RosterRecommendation,
     ScoreRequest,
 )
@@ -91,6 +93,12 @@ def ingest_context_chunks(request: ContextIngestRequest) -> ContextIngestResult:
         chunk_count=count,
         chunk_ids=[chunk.chunk_id for chunk in request.chunks],
     )
+
+
+@app.post("/v1/graph/facts", response_model=GraphIngestResult)
+def ingest_graph_facts(request: GraphIngestRequest) -> GraphIngestResult:
+    count = agent_orchestrator.graph_provider.upsert(request.facts)
+    return GraphIngestResult(backend=agent_orchestrator.settings.graph_backend, fact_count=count)
 
 
 @app.post("/admin/disable")
