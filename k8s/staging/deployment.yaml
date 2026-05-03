@@ -1,0 +1,97 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: teambuilder-config
+  namespace: staging
+data:
+  ADAPTATION_REPOSITORY_BACKEND: "postgres"
+  AUDIT_BACKEND: "postgres"
+  AGENT_REPOSITORY_BACKEND: "postgres"
+  AGENT_STATE_BACKEND: "redis"
+  CANDIDATE_POOL_BACKEND: "postgres"
+  DEPLOYMENT_REPOSITORY_BACKEND: "postgres"
+  OPERATIONAL_TWIN_REPOSITORY_BACKEND: "postgres"
+  RETRIEVAL_BACKEND: "pgvector"
+  GRAPH_BACKEND: "falkordb"
+  SHARED_DATA_BACKEND: "postgres"
+  SYSTEM2_AGENTIC_PROVIDER: "auto"
+  SYSTEM2_AGENTIC_MAX_RETRIES: "1"
+  SYSTEM2_AGENTIC_TIMEOUT_SECONDS: "45"
+  OPENAI_BASE_URL: "https://api.openai.com/v1"
+  SYSTEM2_AUDIT_LOG: "/tmp/system2_audit.jsonl"
+  SYSTEM2_CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: teambuilder
+  namespace: staging
+  labels:
+    app: teambuilder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: teambuilder
+  template:
+    metadata:
+      labels:
+        app: teambuilder
+    spec:
+      containers:
+        - name: teambuilder
+          image: 192.168.0.247:5000/teambuilder:IMAGE_TAG
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: teambuilder-config
+            - secretRef:
+                name: teambuilder-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /v1/healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: teambuilder
+  namespace: staging
+  labels:
+    app: teambuilder
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 192.168.0.253
+  selector:
+    app: teambuilder
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000

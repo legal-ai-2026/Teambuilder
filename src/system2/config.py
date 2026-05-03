@@ -241,7 +241,7 @@ class InfraSettings:
                 name="SYSTEM2_AGENTIC_TIMEOUT_SECONDS",
             ),
             openai_api_key=openai_api_key,
-            openai_model=source.get("OPENAI_MODEL", "gpt-5.4-mini"),
+            openai_model=source.get("OPENAI_MODEL", "gpt-5.5"),
             openai_base_url=source.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         )
 

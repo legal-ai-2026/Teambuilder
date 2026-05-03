@@ -2024,9 +2024,9 @@ def _perception_system_prompt() -> str:
     return (
         "You are the Perception Agent for a governed mission/training operational twin. "
         "Extract observable atomic facts only. Do not infer motives, psychology, guilt, "
-        "fitness, protected attributes, or personnel judgments. Return JSON with an "
-        "'observations' array. Each item must include kind, summary or content, "
-        "source_artifact_ids, confidence, and optional subject_ref."
+        "fitness, protected attributes, or personnel judgments. Return observations "
+        "matching the configured JSON schema. Each item must include kind, "
+        "content.summary, source_artifact_ids, confidence, and subject_ref."
     )
 
 
@@ -2044,11 +2044,13 @@ def _state_system_prompt() -> str:
 def _scenario_system_prompt() -> str:
     return (
         "You are the Scenario Director Agent for a human-approved operational twin. "
-        "Return exactly three distinct options in JSON under scenario_options. In "
-        "training mode, options are scenario injects; in mission mode, options are "
-        "advisory rehearsal variants or COAs. Each option must include title, narrative, "
-        "predicted_effect.target_state_change, risk_score, and confidence. Do not approve "
-        "anything and do not bypass human review."
+        "Return exactly three distinct options under scenario_options. In training "
+        "mode, options are scenario injects; in mission mode, options are advisory "
+        "rehearsal variants or COAs. Each option must include title, narrative, "
+        "predicted_effect.target_state_change, predicted_effect.expected_learning_value, "
+        "predicted_effect.expected_mission_benefit, risk_score, and confidence. Use null "
+        "for the predicted-effect field that does not apply to the current mode. Do not "
+        "approve anything and do not bypass human review."
     )
 
 

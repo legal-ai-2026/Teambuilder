@@ -126,7 +126,7 @@ from system2.shared_data import (
 
 class FakeJsonAgentClient:
     provider = "openai"
-    model = "gpt-5.4-mini"
+    model = "gpt-5.5"
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -320,7 +320,7 @@ class DuplicateScenarioJsonAgentClient(FakeJsonAgentClient):
         return super().complete_json(stage=stage, system=system, user=user)
 
 
-def test_openai_json_agent_client_uses_default_temperature(monkeypatch) -> None:
+def test_openai_json_agent_client_uses_responses_api_structured_outputs(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class FakeResponse:
@@ -331,9 +331,36 @@ def test_openai_json_agent_client_uses_default_temperature(monkeypatch) -> None:
             return None
 
         def read(self) -> bytes:
-            return json.dumps({"choices": [{"message": {"content": "{\"ok\": true}"}}]}).encode()
+            return json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": (
+                                        '{"state_vector":{"fatigue_burden":0.1,'
+                                        '"situational_clarity":0.8,"cohesion":0.7,'
+                                        '"leader_decision_quality":0.6,'
+                                        '"mission_tempo_risk":0.2,'
+                                        '"training_challenge_gap":0.1},'
+                                        '"uncertainty":{"overall":0.2,'
+                                        '"by_field":{"fatigue_burden":0.2,'
+                                        '"situational_clarity":0.2,"cohesion":0.2,'
+                                        '"leader_decision_quality":0.2,'
+                                        '"mission_tempo_risk":0.2,'
+                                        '"training_challenge_gap":0.2}}}'
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ).encode()
 
     def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        captured["url"] = request.full_url
         captured["payload"] = json.loads(request.data.decode("utf-8"))
         captured["timeout"] = timeout
         return FakeResponse()
@@ -341,12 +368,17 @@ def test_openai_json_agent_client_uses_default_temperature(monkeypatch) -> None:
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
     client = OpenAIJsonAgentClient(api_key="test-key", model="gpt-5.5", timeout_seconds=12.0)
-    assert client.complete_json(stage="test", system="Return JSON.", user="{}") == {"ok": True}
+    response = client.complete_json(stage="state", system="Return JSON.", user="{}")
+    assert response["state_vector"]["fatigue_burden"] == 0.1
 
     payload = captured["payload"]
     assert isinstance(payload, dict)
+    assert captured["url"].endswith("/responses")
     assert payload["model"] == "gpt-5.5"
-    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["store"] is False
+    assert payload["text"]["format"]["type"] == "json_schema"
+    assert payload["text"]["format"]["name"] == "system2_state_response"
+    assert payload["text"]["format"]["strict"] is True
     assert "temperature" not in payload
     assert captured["timeout"] == 12.0
 
@@ -1732,7 +1764,7 @@ def test_infra_settings_default_to_local_backends() -> None:
     assert settings.agentic_max_retries == 1
     assert settings.agentic_timeout_seconds == pytest.approx(45.0)
     assert settings.openai_api_key is None
-    assert settings.openai_model == "gpt-5.4-mini"
+    assert settings.openai_model == "gpt-5.5"
 
 
 def test_infra_settings_treats_blank_security_values_as_unset() -> None:
@@ -1763,7 +1795,7 @@ def test_infra_settings_parses_openai_agentic_runtime() -> None:
             "SYSTEM2_AGENTIC_MAX_RETRIES": "2",
             "SYSTEM2_AGENTIC_TIMEOUT_SECONDS": "30.5",
             "OPENAI_API_KEY": "test-openai-key",
-            "OPENAI_MODEL": "gpt-5.4-mini",
+            "OPENAI_MODEL": "gpt-5.5",
             "OPENAI_BASE_URL": "https://api.openai.example/v1",
         }
     )
@@ -1774,7 +1806,7 @@ def test_infra_settings_parses_openai_agentic_runtime() -> None:
     assert settings.agentic_max_retries == 2
     assert settings.agentic_timeout_seconds == pytest.approx(30.5)
     assert settings.openai_api_key == "test-openai-key"
-    assert settings.openai_model == "gpt-5.4-mini"
+    assert settings.openai_model == "gpt-5.5"
     assert settings.openai_base_url == "https://api.openai.example/v1"
     assert status["agentic_runtime"] == {
         "provider": "openai",
@@ -1782,7 +1814,7 @@ def test_infra_settings_parses_openai_agentic_runtime() -> None:
         "timeout_seconds": 30.5,
         "input_boundary": "processed_system1_data",
         "openai_configured": True,
-        "openai_model": "gpt-5.4-mini",
+        "openai_model": "gpt-5.5",
         "openai_base_url": "https://api.openai.example/v1",
     }
 

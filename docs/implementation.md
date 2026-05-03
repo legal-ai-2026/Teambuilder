@@ -128,11 +128,11 @@ options can receive outcome/AAR capture through the outcome endpoint, which
 adds a stored outcome, draft lesson, audit record, and shared update event.
 
 Set `SYSTEM2_AGENTIC_PROVIDER=auto` or `openai` and provide `OPENAI_API_KEY` to
-run the complete agentic path. The runtime uses OpenAI JSON responses for
-perception, state estimation, scenario direction, and critic review. If OpenAI
-is unavailable in `auto` mode, the endpoint records a fallback stage in
-`agent_trace` and keeps the deterministic output. Stage traces include
-input/output hashes, duration, and fallback reason. Use
+run the complete agentic path. The runtime uses OpenAI Responses API structured
+JSON outputs for perception, state estimation, scenario direction, and critic
+review. If OpenAI is unavailable in `auto` mode, the endpoint records a
+fallback stage in `agent_trace` and keeps the deterministic output. Stage traces
+include input/output hashes, duration, and fallback reason. Use
 `SYSTEM2_AGENTIC_PROVIDER=deterministic` for offline validation.
 
 System 2 does not perform STT, OCR, or raw media extraction. System 1 owns
@@ -240,10 +240,10 @@ writes audit plus deployment recommendation update events.
 
 `llm.py`
 
-Defines the JSON agent-client protocol and an OpenAI chat-completions adapter.
-The adapter requests JSON objects and parses them before the operational twin
-service validates the result against strict Pydantic contracts. The project
-does not require the OpenAI Python SDK.
+Defines the JSON agent-client protocol and an OpenAI Responses API adapter. The
+adapter requests stage-specific structured JSON objects and parses them before
+the operational twin service validates the result against strict Pydantic
+contracts. The project does not require the OpenAI Python SDK.
 
 `decision_quality.py`
 

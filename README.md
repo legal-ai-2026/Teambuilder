@@ -71,7 +71,7 @@ SYSTEM2_AGENTIC_PROVIDER=auto
 SYSTEM2_AGENTIC_MAX_RETRIES=1
 SYSTEM2_AGENTIC_TIMEOUT_SECONDS=45
 OPENAI_API_KEY=replace-me-openai-key
-OPENAI_MODEL=gpt-5.4-mini
+OPENAI_MODEL=gpt-5.5
 OPENAI_BASE_URL=https://api.openai.com/v1
 SYSTEM2_CORS_ORIGINS=https://frontend.example.mil
 SYSTEM2_API_KEY=replace-me-service-key
@@ -99,12 +99,13 @@ workflow routes are open. When it is set, protected routes accept either
 The operational twin supports three agentic runtime modes through
 `SYSTEM2_AGENTIC_PROVIDER`: `auto`, `openai`, or `deterministic`. `auto` uses
 OpenAI when `OPENAI_API_KEY` is present and otherwise keeps the local
-deterministic fallback. The OpenAI path runs four explicit agents: perception,
-state estimation, scenario direction, and critic review. Every run returns
-`agent_trace` with input/output hashes, duration, and fallback reason so callers
-can see which provider handled each stage. Consequential options stay in draft
-until a human decision is recorded, and approved options can later receive an
-outcome/AAR capture without automatic model learning.
+deterministic fallback. The OpenAI path uses the Responses API with structured
+JSON schemas for four explicit agents: perception, state estimation, scenario
+direction, and critic review. Every run returns `agent_trace` with input/output
+hashes, duration, and fallback reason so callers can see which provider handled
+each stage. Consequential options stay in draft until a human decision is
+recorded, and approved options can later receive an outcome/AAR capture without
+automatic model learning.
 
 System 2 does not perform STT or OCR. It consumes processed System 1 outputs
 such as observations, transcripts, OCR text, mission context, terrain, weather,

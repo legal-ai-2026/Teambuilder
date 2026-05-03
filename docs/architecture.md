@@ -96,7 +96,8 @@ evaluation and calibration readiness, not automatic model learning.
 
 The loop can run as a complete agentic system. With
 `SYSTEM2_AGENTIC_PROVIDER=auto` or `openai` and `OPENAI_API_KEY` configured,
-the backend invokes four JSON-producing agents:
+the backend invokes four OpenAI Responses API agents with structured JSON
+outputs:
 
 | Agent stage | Responsibility | Hard boundary |
 |---|---|---|
@@ -192,7 +193,7 @@ The active package is `src/system2/`.
 | `cognitive.py` | Evidence fusion, cognitive state estimation, scenario direction, safety/doctrine gating, and adaptation approval |
 | `operational_twin.py` | Backend operational twin loop for multimodal evidence, state estimates, governed options, decisions, and lessons |
 | `deployment.py` | First-class individual/platoon deployment recommendation wrapper around mission-mode operational twin runs |
-| `llm.py` | JSON LLM client boundary for OpenAI-backed agent stages without requiring an SDK dependency |
+| `llm.py` | Responses API structured-output client boundary for OpenAI-backed agent stages without requiring an SDK dependency |
 | `decision_quality.py` | Deterministic decision-quality, value-of-information, utility, and reliance guidance for recommendation responses |
 | `service.py` | Orchestrates scoring, assignment, fairness, career forecast, trace metadata, and audit logging |
 | `candidate_pool.py` | Resolves `candidate_pool_id` into canonical soldiers, role slots, and source references |

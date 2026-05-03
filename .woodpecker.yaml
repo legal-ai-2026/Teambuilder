@@ -1,0 +1,50 @@
+when:
+  branch: main
+  event: push
+
+steps:
+  - name: test
+    image: python:3.11-slim
+    commands:
+      - python -m pip install --upgrade pip
+      - python -m pip install -e ".[dev]"
+      - python -m pytest
+
+  - name: build-and-push
+    image: gcr.io/kaniko-project/executor:debug
+    depends_on: [test]
+    commands:
+      - /kaniko/executor --dockerfile=Dockerfile --context=. --destination=ci-cd-zot.ci-cd.svc.cluster.local:5000/teambuilder:latest --destination=ci-cd-zot.ci-cd.svc.cluster.local:5000/teambuilder:$(echo $CI_COMMIT_SHA | cut -c1-8) --insecure --skip-tls-verify
+
+  - name: deploy-staging
+    image: bitnami/kubectl:latest
+    depends_on: [build-and-push]
+    commands:
+      - export SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-8)
+      - kubectl config set-cluster homelab --server=$K8S_SERVER --insecure-skip-tls-verify=true
+      - kubectl config set-credentials deployer --token=$K8S_TOKEN
+      - kubectl config set-context homelab --cluster=homelab --user=deployer --namespace=staging
+      - kubectl config use-context homelab
+      - sed -i "s|IMAGE_TAG|$SHORT_SHA|g" k8s/staging/deployment.yaml
+      - kubectl apply -f k8s/staging/deployment.yaml
+      - |
+        i=0
+        while [ "$i" -lt 36 ]; do
+          DESIRED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.spec.replicas}')
+          UPDATED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.updatedReplicas}')
+          AVAILABLE=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.availableReplicas}')
+          if [ "${UPDATED:-0}" = "${DESIRED:-1}" ] && [ "${AVAILABLE:-0}" = "${DESIRED:-1}" ]; then
+            kubectl get deployment/teambuilder --namespace=staging
+            exit 0
+          fi
+          i=$((i + 1))
+          sleep 5
+        done
+        kubectl get deployment/teambuilder --namespace=staging
+        kubectl get pods --namespace=staging -l app=teambuilder
+        exit 1
+    environment:
+      K8S_TOKEN:
+        from_secret: K8S_TOKEN_STAGING
+      K8S_SERVER:
+        from_secret: K8S_SERVER
