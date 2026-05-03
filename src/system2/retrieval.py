@@ -211,6 +211,17 @@ def embedding_literal(values: Sequence[float]) -> str:
 def _default_contexts() -> list[RetrievedContext]:
     return [
         RetrievedContext(
+            source="docs/architecture.md",
+            title="Cognitive adaptation contract",
+            content=(
+                "The live adaptation loop estimates sensemaking, critical "
+                "thinking, systems thinking, readiness pressure, and team state; "
+                "scenario recommendations require instructor approval."
+            ),
+            score=1.0,
+            metadata={"backend": "local", "chunk_id": "cognitive-adaptation-contract"},
+        ),
+        RetrievedContext(
             source="assets/feature-spec.md",
             title="Feature contract",
             content=(

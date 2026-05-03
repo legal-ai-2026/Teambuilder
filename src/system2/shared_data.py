@@ -11,10 +11,14 @@ from uuid import uuid4
 from .audit import redact_payload
 from .models import (
     AgentRun,
+    CognitiveAdaptationRequest,
+    CognitiveAdaptationResponse,
     ContextChunkInput,
     GraphFactInput,
     RoleRequirement,
     RosterRecommendation,
+    ScenarioApprovalRequest,
+    ScenarioApprovalResponse,
     ScoreRequest,
     Soldier,
     SourceReference,
@@ -193,6 +197,9 @@ def score_request_source_refs(
     request: ScoreRequest,
     soldiers: Sequence[Soldier],
     roles: Sequence[RoleRequirement],
+    *,
+    candidate_pool_resolved: bool = False,
+    additional_refs: Sequence[SourceReference] = (),
 ) -> list[SourceReference]:
     refs = [
         SourceReference(
@@ -216,7 +223,7 @@ def score_request_source_refs(
                 ),
             )
         )
-    if request.candidates:
+    if request.candidates or candidate_pool_resolved:
         refs.extend(
             SourceReference(
                 ref=f"postgres://soldiers_current/{soldier.soldier_id}",
@@ -251,6 +258,7 @@ def score_request_source_refs(
         )
         for role in roles
     )
+    refs.extend(additional_refs)
     return dedupe_source_refs(refs)
 
 
@@ -409,6 +417,75 @@ def build_graph_update_events(facts: Sequence[GraphFactInput]) -> list[dict[str,
             }
         )
     return events
+
+
+def build_cognitive_adaptation_update_event(
+    request: CognitiveAdaptationRequest,
+    response: CognitiveAdaptationResponse,
+) -> dict[str, Any]:
+    payload = {
+        "adaptation_id": response.adaptation_id,
+        "mission_id": response.mission_id,
+        "team_id": response.team_id,
+        "instructor_id": request.instructor_id,
+        "primary_development_dimension": response.state.primary_development_dimension,
+        "state_snapshot_id": response.state.snapshot_id,
+        "recommendation_ids": [item.recommendation_id for item in response.recommendations],
+        "blocked_recommendation_ids": [
+            item.recommendation_id for item in response.blocked_recommendations
+        ],
+        "source_refs": [ref.model_dump(mode="json") for ref in response.trace.source_refs],
+    }
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "scenario_adaptation",
+        "entity_id": response.adaptation_id,
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": response.adaptation_id,
+        "operation": "recommend",
+        "event_payload": payload,
+        "previous_source_hash": None,
+        "new_source_hash": canonical_hash(response.model_dump(mode="json")),
+        "observed_at": response.state.generated_at,
+        "recorded_at": datetime.now(UTC),
+        "actor_id": request.instructor_id,
+        "reason": "Cognitive Mission Adaptation Engine generated instructor-approved scenario options.",
+    }
+
+
+def build_scenario_approval_update_event(
+    adaptation: CognitiveAdaptationResponse,
+    request: ScenarioApprovalRequest,
+    approval: ScenarioApprovalResponse,
+) -> dict[str, Any]:
+    payload = {
+        "adaptation_id": adaptation.adaptation_id,
+        "mission_id": adaptation.mission_id,
+        "team_id": adaptation.team_id,
+        "recommendation_id": request.recommendation_id,
+        "decision": request.decision.value,
+        "approved_inject": (
+            approval.approved_inject.model_dump(mode="json")
+            if approval.approved_inject is not None
+            else None
+        ),
+        "source_refs": [ref.model_dump(mode="json") for ref in adaptation.trace.source_refs],
+    }
+    return {
+        "event_id": f"update-{uuid4()}",
+        "entity_type": "scenario_inject",
+        "entity_id": request.recommendation_id,
+        "source_app": SYSTEM2_APP_ID,
+        "source_record_id": adaptation.adaptation_id,
+        "operation": "approve" if request.decision.value == "approved" else "reject",
+        "event_payload": payload,
+        "previous_source_hash": canonical_hash(adaptation.model_dump(mode="json")),
+        "new_source_hash": canonical_hash(approval.model_dump(mode="json")),
+        "observed_at": approval.decided_at,
+        "recorded_at": datetime.now(UTC),
+        "actor_id": request.approver_id,
+        "reason": request.rationale,
+    }
 
 
 def _short_id(prefix: str, value: Any) -> str:

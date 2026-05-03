@@ -8,9 +8,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 _BACKENDS = {
+    "adaptation_repository": {"memory", "postgres"},
     "agent_repository": {"memory", "postgres"},
     "agent_state": {"memory", "redis"},
     "audit": {"file", "postgres"},
+    "candidate_pool": {"local", "postgres"},
     "retrieval": {"local", "pgvector"},
     "graph": {"local", "falkordb"},
     "shared_data": {"memory", "postgres"},
@@ -87,9 +89,11 @@ class InfraSettings:
     falkordb_url: str | None
     pgvector_enabled: bool
     audit_log_path: str
+    adaptation_repository_backend: str
     audit_backend: str
     agent_repository_backend: str
     agent_state_backend: str
+    candidate_pool_backend: str
     retrieval_backend: str
     graph_backend: str
     shared_data_backend: str
@@ -109,6 +113,11 @@ class InfraSettings:
             falkordb_url=source.get("FALKORDB_URL"),
             pgvector_enabled=pgvector_enabled,
             audit_log_path=source.get("SYSTEM2_AUDIT_LOG", "/tmp/system2_audit.jsonl"),
+            adaptation_repository_backend=_backend(
+                source.get("ADAPTATION_REPOSITORY_BACKEND"),
+                default="postgres" if database_url else "memory",
+                kind="adaptation_repository",
+            ),
             audit_backend=_backend(
                 source.get("AUDIT_BACKEND"),
                 default="postgres" if database_url else "file",
@@ -123,6 +132,11 @@ class InfraSettings:
                 source.get("AGENT_STATE_BACKEND"),
                 default="redis" if source.get("REDIS_URL") else "memory",
                 kind="agent_state",
+            ),
+            candidate_pool_backend=_backend(
+                source.get("CANDIDATE_POOL_BACKEND"),
+                default="postgres" if database_url else "local",
+                kind="candidate_pool",
             ),
             retrieval_backend=_backend(
                 source.get("RETRIEVAL_BACKEND"),
@@ -159,9 +173,11 @@ class InfraSettings:
             },
             "audit_log_path": self.audit_log_path,
             "backends": {
+                "adaptation_repository": self.adaptation_repository_backend,
                 "audit": self.audit_backend,
                 "agent_repository": self.agent_repository_backend,
                 "agent_state": self.agent_state_backend,
+                "candidate_pool": self.candidate_pool_backend,
                 "retrieval": self.retrieval_backend,
                 "graph": self.graph_backend,
                 "shared_data": self.shared_data_backend,

@@ -5,18 +5,28 @@ from pydantic import ValidationError
 
 from system2.api import (
     create_agent_run,
+    create_adaptation,
     disable,
     enable,
+    get_adaptation,
     get_agent_run,
     ingest_context_chunks,
     ingest_graph_facts,
+    list_mission_adaptations,
+    record_adaptation_approval,
     record_agent_run_approval,
     score,
     score_v1,
 )
+from system2.adaptation_store import (
+    ADAPTATION_SCHEMA_SQL,
+    InMemoryAdaptationRepository,
+    dump_adaptation,
+    load_adaptation,
+)
 from system2.agent_orchestrator import AgentOrchestrator
 from system2.agent_state import InMemoryAgentStateStore, RedisAgentStateStore
-from system2.agent_stack import build_agent_orchestrator, build_audit_log, build_shared_data_sink
+from system2.agent_stack import build_adaptation_repository, build_agent_orchestrator, build_audit_log, build_shared_data_sink
 from system2.agent_store import InMemoryAgentRunRepository
 from system2.audit import (
     POSTGRES_AUDIT_SCHEMA_SQL,
@@ -26,7 +36,14 @@ from system2.audit import (
     validate_audit_records,
     validate_hash_chain,
 )
+from system2.candidate_pool import (
+    CANDIDATE_POOL_SCHEMA_SQL,
+    InMemoryCandidatePoolResolver,
+    _soldier_from_row,
+    build_local_candidate_pool_source_refs,
+)
 from system2.config import InfraSettings, redact_url
+from system2.cognitive import CognitiveAdaptationService
 from system2.data import default_roles, generate_soldiers
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
 from system2.models import (
@@ -34,11 +51,16 @@ from system2.models import (
     AgentApprovalRequest,
     AgentRunRequest,
     AgentRunStatus,
+    AdaptationConstraints,
+    CognitiveAdaptationRequest,
     ContextChunkInput,
     ContextIngestRequest,
     GraphFactInput,
     GraphIngestRequest,
+    RoleRequirement,
+    ScenarioApprovalRequest,
     ScoreRequest,
+    TrainingEvidence,
 )
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
@@ -73,6 +95,112 @@ def test_score_returns_roster_and_audit() -> None:
         assert assessment.model_disagreement == pytest.approx(
             abs(assessment.p_success_tabpfn - assessment.p_success_bayes_mean)
         )
+
+
+def test_cognitive_adaptation_recommends_instructor_approved_scenario_changes() -> None:
+    payload = create_adaptation(
+        CognitiveAdaptationRequest(
+            mission_id="raid-tonight",
+            instructor_id="instructor-1",
+            team_id="alpha",
+            target_soldier_ids=["RGR-0001"],
+            evidence=[
+                TrainingEvidence(
+                    evidence_id="obs-001",
+                    source_type="voice_note",
+                    text=(
+                        "Soldier handled direct contact, but missed the second-order "
+                        "relationship between terrain, timing, support, civilian movement, "
+                        "and a delayed comms relay under moderate fatigue."
+                    ),
+                    soldier_ids=["RGR-0001"],
+                    tags=["systems_thinking", "fatigue"],
+                    metrics={"sleep_hours": 4.5},
+                )
+            ],
+        )
+    )
+
+    assert payload.status == "pending_approval"
+    assert payload.state.primary_development_dimension == "systems_thinking"
+    assert len(payload.recommendations) == 3
+    assert payload.blocked_recommendations == []
+    assert payload.trace.input_source_hashes
+    assert any("comms relay" in item.proposed_inject for item in payload.recommendations)
+    assert get_adaptation(payload.adaptation_id).adaptation_id == payload.adaptation_id
+    assert any(
+        adaptation.adaptation_id == payload.adaptation_id
+        for adaptation in list_mission_adaptations("raid-tonight")
+    )
+
+    approval = record_adaptation_approval(
+        payload.adaptation_id,
+        ScenarioApprovalRequest(
+            recommendation_id=payload.recommendations[0].recommendation_id,
+            decision=AgentApprovalDecision.approved,
+            approver_id="instructor-1",
+            rationale="Good targeted pressure for the next lane.",
+        ),
+    )
+
+    assert approval.status == "completed"
+    assert approval.approved_inject is not None
+    assert approval.approved_inject.recommendation_id == payload.recommendations[0].recommendation_id
+    assert get_adaptation(payload.adaptation_id).status == "completed"
+
+
+def test_cognitive_adaptation_safety_auditor_blocks_excess_risk(tmp_path) -> None:
+    sink = InMemorySharedDataSink()
+    service = CognitiveAdaptationService(
+        audit_log=AuditLog(tmp_path / "audit.jsonl"),
+        shared_data_sink=sink,
+    )
+
+    payload = service.adapt(
+        CognitiveAdaptationRequest(
+            mission_id="raid-tonight",
+            instructor_id="instructor-1",
+            team_id="alpha",
+            constraints=AdaptationConstraints(max_safety_risk="low"),
+            evidence=[
+                TrainingEvidence(
+                    evidence_id="obs-002",
+                    source_type="checklist",
+                    text="Leader made a single option assumption and failed to question a contradictory report.",
+                    tags=["critical_thinking"],
+                )
+            ],
+        )
+    )
+
+    assert len(payload.recommendations) == 1
+    assert payload.recommendations[0].inject_type == "skill_isolation"
+    assert len(payload.blocked_recommendations) == 2
+    assert all(item.status == "blocked" for item in payload.blocked_recommendations)
+    assert sink.update_events[-1]["entity_type"] == "scenario_adaptation"
+
+
+def test_adaptation_repository_round_trips_serialized_payload(tmp_path) -> None:
+    service = CognitiveAdaptationService(audit_log=AuditLog(tmp_path / "audit.jsonl"))
+    payload = service.adapt(
+        CognitiveAdaptationRequest(
+            mission_id="serialization-mission",
+            instructor_id="instructor-1",
+            team_id="alpha",
+            evidence=[
+                TrainingEvidence(
+                    evidence_id="obs-serialize",
+                    source_type="aar",
+                    text="Improving systems thinking after terrain and timing review.",
+                    tags=["improving", "systems_thinking"],
+                )
+            ],
+        )
+    )
+
+    loaded = load_adaptation(dump_adaptation(payload))
+
+    assert loaded == payload
 
 
 def test_kill_switch_blocks_scoring() -> None:
@@ -130,9 +258,11 @@ def test_infra_settings_redacts_connection_urls() -> None:
     assert status["redis"]["url"] == "redis://redis.internal:6379/0"
     assert status["falkordb"]["url"] == "redis://graph_user:***@falkordb.internal:6379"
     assert status["backends"] == {
+        "adaptation_repository": "postgres",
         "audit": "postgres",
         "agent_repository": "postgres",
         "agent_state": "redis",
+        "candidate_pool": "postgres",
         "retrieval": "pgvector",
         "graph": "falkordb",
         "shared_data": "postgres",
@@ -143,9 +273,11 @@ def test_infra_settings_redacts_connection_urls() -> None:
 def test_infra_settings_default_to_local_backends() -> None:
     settings = InfraSettings.from_env({})
 
+    assert settings.adaptation_repository_backend == "memory"
     assert settings.agent_repository_backend == "memory"
     assert settings.agent_state_backend == "memory"
     assert settings.audit_backend == "file"
+    assert settings.candidate_pool_backend == "local"
     assert settings.retrieval_backend == "local"
     assert settings.graph_backend == "local"
     assert settings.shared_data_backend == "memory"
@@ -166,9 +298,11 @@ def test_infra_settings_supports_graph_stack_env_shape() -> None:
     assert settings.database_url == "postgresql://graphmem:secret@192.168.0.251:5432/graphmem"
     assert settings.pgvector_url == "postgresql://graphmem:secret@192.168.0.251:5432/graphmem"
     assert settings.pgvector_enabled is True
+    assert settings.adaptation_repository_backend == "postgres"
     assert settings.audit_backend == "postgres"
     assert settings.agent_repository_backend == "postgres"
     assert settings.agent_state_backend == "redis"
+    assert settings.candidate_pool_backend == "postgres"
     assert settings.retrieval_backend == "pgvector"
     assert settings.graph_backend == "falkordb"
     assert settings.shared_data_backend == "postgres"
@@ -255,6 +389,24 @@ def test_shared_data_schema_contains_update_and_snapshot_tables() -> None:
     assert "CREATE TABLE IF NOT EXISTS entity_update_events" in SHARED_DATA_SCHEMA_SQL
     assert "CREATE TABLE IF NOT EXISTS decision_snapshots" in SHARED_DATA_SCHEMA_SQL
     assert "input_source_hashes jsonb NOT NULL" in SHARED_DATA_SCHEMA_SQL
+
+
+def test_candidate_pool_schema_contains_shared_projection_tables() -> None:
+    assert "CREATE TABLE IF NOT EXISTS candidate_pools_current" in CANDIDATE_POOL_SCHEMA_SQL
+    assert "CREATE TABLE IF NOT EXISTS soldiers_current" in CANDIDATE_POOL_SCHEMA_SQL
+    assert "CREATE TABLE IF NOT EXISTS role_slots_current" in CANDIDATE_POOL_SCHEMA_SQL
+
+
+def test_adaptation_schema_contains_lookup_indexes() -> None:
+    assert "CREATE TABLE IF NOT EXISTS system2_adaptations" in ADAPTATION_SCHEMA_SQL
+    assert "idx_system2_adaptations_mission_id" in ADAPTATION_SCHEMA_SQL
+    assert "idx_system2_adaptations_status" in ADAPTATION_SCHEMA_SQL
+
+
+def test_build_adaptation_repository_uses_memory_by_default() -> None:
+    repository = build_adaptation_repository(InfraSettings.from_env({}))
+
+    assert isinstance(repository, InMemoryAdaptationRepository)
 
 
 def test_build_shared_data_sink_uses_memory_by_default() -> None:
@@ -510,6 +662,93 @@ def test_recommendation_trace_cites_input_sources() -> None:
     assert "synthetic://system2/generated-candidates/source-refs/7" in refs
     assert payload.trace.input_source_hashes["postgres://missions_current/source-refs"].startswith("sha256:")
     assert refs["synthetic://system2/generated-candidates/source-refs/7"].metadata["operational_source"] is False
+
+
+def test_candidate_pool_resolver_replaces_synthetic_fallback_refs() -> None:
+    mission_id = "resolved-mission"
+    pool_id = "pool-resolved"
+    soldiers = generate_soldiers(80, seed=7)
+    roles = default_roles()
+    resolver = InMemoryCandidatePoolResolver()
+    resolver.add_pool(
+        pool_id,
+        mission_id,
+        soldiers,
+        roles,
+        build_local_candidate_pool_source_refs(pool_id, mission_id, soldiers, roles),
+    )
+
+    payload = SelectionService(candidate_pool_resolver=resolver).score(
+        ScoreRequest(mission_id=mission_id, candidate_pool_id=pool_id, candidate_count=80, seed=999)
+    )
+    refs = {ref.ref: ref for ref in payload.trace.source_refs}
+
+    assert f"postgres://candidate_pools_current/{pool_id}" in refs
+    assert refs[f"postgres://candidate_pools_current/{pool_id}"].role == "candidate_pool_resolved"
+    assert refs[f"postgres://candidate_pools_current/{pool_id}"].metadata["candidate_count"] == 80
+    assert "synthetic://system2/generated-candidates/resolved-mission/999" not in refs
+    assert payload.trace.feature_hash == feature_hash(soldiers, roles)
+
+
+def test_candidate_pool_request_roles_replace_resolved_role_refs() -> None:
+    mission_id = "role-override-mission"
+    pool_id = "pool-role-override"
+    soldiers = generate_soldiers(80, seed=7)
+    resolved_roles = default_roles()
+    request_roles = [RoleRequirement(slot_id="CUSTOM-1", role="assaulter", min_acft=300)]
+    resolver = InMemoryCandidatePoolResolver()
+    resolver.add_pool(
+        pool_id,
+        mission_id,
+        soldiers,
+        resolved_roles,
+        build_local_candidate_pool_source_refs(pool_id, mission_id, soldiers, resolved_roles),
+    )
+
+    payload = SelectionService(candidate_pool_resolver=resolver).score(
+        ScoreRequest(mission_id=mission_id, candidate_pool_id=pool_id, roles=request_roles)
+    )
+    refs = {ref.ref: ref for ref in payload.trace.source_refs}
+
+    assert len(payload.roster) == 1
+    assert f"postgres://role_slots_current/{mission_id}/CUSTOM-1" in refs
+    assert f"postgres://role_slots_current/{mission_id}/{resolved_roles[0].slot_id}" not in refs
+    assert payload.trace.feature_hash == feature_hash(soldiers, request_roles)
+
+
+def test_strict_candidate_pool_resolver_fails_when_pool_is_missing() -> None:
+    resolver = InMemoryCandidatePoolResolver(requires_resolution=True)
+    service = SelectionService(candidate_pool_resolver=resolver)
+
+    with pytest.raises(ValueError, match="candidate_pool_id 'missing-pool' was not found"):
+        service.score(ScoreRequest(mission_id="missing-mission", candidate_pool_id="missing-pool"))
+
+
+def test_postgres_soldier_row_uses_projection_columns_for_unit_and_mos() -> None:
+    soldier = generate_soldiers(1, seed=7)[0]
+    profile = soldier.model_dump(
+        mode="json",
+        exclude={"soldier_id", "unit_id", "mos", "protected_race", "protected_gender"},
+    )
+    protected = {
+        "protected_race": soldier.protected_race,
+        "protected_gender": soldier.protected_gender,
+    }
+
+    parsed = _soldier_from_row(
+        (
+            soldier.soldier_id,
+            soldier.unit_id,
+            soldier.mos,
+            profile,
+            protected,
+            "sha256:test",
+        )
+    )
+
+    assert parsed.soldier_id == soldier.soldier_id
+    assert parsed.unit_id == soldier.unit_id
+    assert parsed.mos == soldier.mos
 
 
 def test_context_and_graph_ingest_events_follow_shared_contract() -> None:

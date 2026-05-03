@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from .adaptation_store import AdaptationRepository, InMemoryAdaptationRepository, PostgresAdaptationRepository
 from .agent_orchestrator import AgentOrchestrator
 from .agent_state import InMemoryAgentStateStore, RedisAgentStateStore
 from .agent_store import AgentRunRepository, InMemoryAgentRunRepository
 from .audit import AuditLog, AuditSink, PostgresAuditLog
+from .candidate_pool import CandidatePoolResolver, InMemoryCandidatePoolResolver, PostgresCandidatePoolResolver
 from .config import InfraSettings
 from .graph import FalkorDBGraphContextProvider, LocalGraphContextProvider
 from .postgres_agent_store import PostgresAgentRunRepository
@@ -18,7 +20,7 @@ def build_agent_orchestrator(
     selection_service: SelectionService | None = None,
 ) -> AgentOrchestrator:
     resolved_settings = settings or InfraSettings.from_env()
-    resolved_service = selection_service or SelectionService(build_audit_log(resolved_settings))
+    resolved_service = selection_service or build_selection_service(resolved_settings)
     return AgentOrchestrator(
         repository=build_agent_run_repository(resolved_settings),
         state_store=(
@@ -48,9 +50,18 @@ def build_agent_run_repository(settings: InfraSettings) -> AgentRunRepository:
     return InMemoryAgentRunRepository()
 
 
+def build_adaptation_repository(settings: InfraSettings) -> AdaptationRepository:
+    if settings.adaptation_repository_backend == "postgres" and settings.database_url:
+        return PostgresAdaptationRepository(settings.database_url)
+    return InMemoryAdaptationRepository()
+
+
 def build_selection_service(settings: InfraSettings | None = None) -> SelectionService:
     resolved_settings = settings or InfraSettings.from_env()
-    return SelectionService(build_audit_log(resolved_settings))
+    return SelectionService(
+        build_audit_log(resolved_settings),
+        build_candidate_pool_resolver(resolved_settings),
+    )
 
 
 def build_audit_log(settings: InfraSettings) -> AuditSink:
@@ -63,3 +74,9 @@ def build_shared_data_sink(settings: InfraSettings) -> SharedDataSink:
     if settings.shared_data_backend == "postgres" and settings.database_url:
         return PostgresSharedDataSink(settings.database_url)
     return InMemorySharedDataSink()
+
+
+def build_candidate_pool_resolver(settings: InfraSettings) -> CandidatePoolResolver:
+    if settings.candidate_pool_backend == "postgres" and settings.database_url:
+        return PostgresCandidatePoolResolver(settings.database_url)
+    return InMemoryCandidatePoolResolver()

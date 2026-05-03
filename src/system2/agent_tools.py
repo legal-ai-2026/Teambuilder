@@ -10,12 +10,18 @@ from .shared_data import canonical_hash
 
 def request_context(request: AgentRunRequest) -> tuple[str, dict[str, object]]:
     score_request = request.score_request
-    candidate_source = "provided" if score_request.candidates else "synthetic"
+    if score_request.candidate_pool_id:
+        candidate_source = "candidate_pool_id"
+    elif score_request.candidates:
+        candidate_source = "provided"
+    else:
+        candidate_source = "synthetic"
     role_source = "provided" if score_request.roles else "default"
     return (
         "Loaded mission, candidate, and role context.",
         {
             "mission_id": score_request.mission_id,
+            "candidate_pool_id": score_request.candidate_pool_id,
             "candidate_source": candidate_source,
             "candidate_count": len(score_request.candidates) if score_request.candidates else score_request.candidate_count,
             "role_source": role_source,

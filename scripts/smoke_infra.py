@@ -105,14 +105,15 @@ def migrate_postgres(settings: InfraSettings) -> CheckResult:
     if not settings.database_url:
         return CheckResult("postgres_migration", False, "DATABASE_URL is not configured")
     try:
-        from system2.agent_stack import build_agent_orchestrator, build_selection_service
+        from system2.agent_stack import build_adaptation_repository, build_agent_orchestrator, build_selection_service
 
+        build_adaptation_repository(settings)
         service = build_selection_service(settings)
         build_agent_orchestrator(settings=settings, selection_service=service)
         return CheckResult(
             "postgres_migration",
             True,
-            "agent, audit, shared-data, and context tables initialized",
+            "adaptation, agent, audit, candidate-pool, shared-data, and context tables initialized",
         )
     except Exception as exc:
         return CheckResult("postgres_migration", False, str(exc))

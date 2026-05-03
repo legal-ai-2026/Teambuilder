@@ -10,6 +10,9 @@ MODEL_VERSIONS = {
     "narrative_adapter": "deterministic-template-0.2",
     "prompt": "system2-roster-recommendation-v1",
     "fairness_metrics": "counterfactual-mi-group-metrics-0.1",
+    "cognitive_state_estimator": "deterministic-cognitive-state-0.1",
+    "scenario_director": "deterministic-scenario-director-0.1",
+    "safety_doctrine_auditor": "deterministic-safety-doctrine-auditor-0.1",
 }
 
 DOD_AI_PRINCIPLES = {

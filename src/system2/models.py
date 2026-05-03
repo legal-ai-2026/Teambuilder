@@ -95,6 +95,133 @@ class ScoreRequest(StrictBaseModel):
     roles: list[RoleRequirement] | None = None
 
 
+CognitiveDimension = Literal[
+    "sensemaking",
+    "critical_thinking",
+    "systems_thinking",
+    "leadership_communication",
+    "execution_reliability",
+    "cognitive_load",
+    "sleep_fatigue",
+    "nutrition_strain",
+    "team_trust",
+]
+
+EvidenceSourceType = Literal[
+    "voice_note",
+    "transcript",
+    "ocr_text",
+    "checklist",
+    "patrol_summary",
+    "aar",
+    "weather",
+    "terrain",
+    "structured_event",
+]
+
+
+class TrainingEvidence(StrictBaseModel):
+    evidence_id: str = Field(min_length=1)
+    source_type: EvidenceSourceType
+    text: str = Field(min_length=1, max_length=20000)
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    soldier_ids: list[str] = Field(default_factory=list)
+    team_id: str | None = None
+    task_code: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    metrics: dict[str, float] = Field(default_factory=dict)
+    source_ref: str | None = None
+
+
+class AdaptationConstraints(StrictBaseModel):
+    max_safety_risk: Literal["low", "medium", "high"] = "medium"
+    allow_environmental_stress: bool = True
+    blocked_inject_types: list[str] = Field(default_factory=list)
+
+
+class CognitiveAdaptationRequest(StrictBaseModel):
+    mission_id: str = Field(min_length=1)
+    instructor_id: str = Field(min_length=1)
+    team_id: str = Field(min_length=1)
+    target_soldier_ids: list[str] = Field(default_factory=list)
+    phase: str | None = None
+    evidence: list[TrainingEvidence] = Field(min_length=1)
+    constraints: AdaptationConstraints = Field(default_factory=AdaptationConstraints)
+    require_human_approval: bool = True
+
+
+class CognitiveDimensionEstimate(StrictBaseModel):
+    dimension: CognitiveDimension
+    current_score: float = Field(ge=0, le=1)
+    development_priority: float = Field(ge=0, le=1)
+    confidence: Confidence
+    trend: Literal["improving", "stable", "declining", "unknown"]
+    rationale: str
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class CognitiveStateSnapshot(StrictBaseModel):
+    snapshot_id: str
+    mission_id: str
+    team_id: str
+    target_soldier_ids: list[str]
+    estimates: list[CognitiveDimensionEstimate]
+    primary_development_dimension: CognitiveDimension
+    likely_failure_mode: str
+    state_summary: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ScenarioInjectRecommendation(StrictBaseModel):
+    recommendation_id: str
+    title: str
+    inject_type: Literal["direct_pressure", "skill_isolation", "transfer_test"]
+    target_dimension: CognitiveDimension
+    proposed_inject: str
+    expected_developmental_effect: str
+    rationale: str
+    doctrine_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    safety_checks: list[str] = Field(default_factory=list)
+    risk_level: Literal["low", "medium", "high"]
+    safety_risk: float = Field(ge=0, le=1)
+    fatigue_risk: float = Field(ge=0, le=1)
+    unfair_exposure_risk: float = Field(ge=0, le=1)
+    expected_learning_gain: float = Field(ge=0, le=1)
+    transfer_value: float = Field(ge=0, le=1)
+    confidence: Confidence
+    status: Literal["pending_approval", "blocked"] = "pending_approval"
+    block_reason: str | None = None
+
+
+class CognitiveAdaptationResponse(StrictBaseModel):
+    adaptation_id: str
+    mission_id: str
+    team_id: str
+    status: Literal["pending_approval", "completed", "rejected", "failed"]
+    state: CognitiveStateSnapshot
+    recommendations: list[ScenarioInjectRecommendation]
+    blocked_recommendations: list[ScenarioInjectRecommendation] = Field(default_factory=list)
+    trace: TraceMetadata
+    approval_required: bool = True
+
+
+class ScenarioApprovalRequest(StrictBaseModel):
+    recommendation_id: str = Field(min_length=1)
+    decision: AgentApprovalDecision
+    approver_id: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+
+
+class ScenarioApprovalResponse(StrictBaseModel):
+    adaptation_id: str
+    recommendation_id: str
+    status: Literal["completed", "rejected"]
+    decision: AgentApprovalDecision
+    approved_inject: ScenarioInjectRecommendation | None = None
+    decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class RiskFactor(StrictBaseModel):
     category: RiskCategory
     label: str

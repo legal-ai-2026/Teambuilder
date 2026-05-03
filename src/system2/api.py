@@ -3,17 +3,22 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from . import __version__
-from .agent_stack import build_agent_orchestrator, build_selection_service
+from .agent_stack import build_adaptation_repository, build_agent_orchestrator, build_selection_service
 from .config import InfraSettings
+from .cognitive import CognitiveAdaptationService
 from .models import (
     AgentApprovalRequest,
     AgentRun,
     AgentRunRequest,
+    CognitiveAdaptationRequest,
+    CognitiveAdaptationResponse,
     ContextIngestRequest,
     ContextIngestResult,
     GraphIngestRequest,
     GraphIngestResult,
     RosterRecommendation,
+    ScenarioApprovalRequest,
+    ScenarioApprovalResponse,
     ScoreRequest,
 )
 from .service import SelectionService
@@ -21,13 +26,22 @@ from .shared_data import build_context_update_events, build_graph_update_events
 
 
 app = FastAPI(
-    title="System 2 Talent Selection Engine",
+    title="System 2 Cognitive Mission Adaptation Engine",
     version=__version__,
-    description="Ranks soldiers into mission rosters with uncertainty, fairness, and trace outputs.",
+    description=(
+        "Adapts live training scenarios from field evidence, cognitive state "
+        "estimates, instructor approval, uncertainty, fairness, and trace outputs."
+    ),
 )
 
 service = build_selection_service()
 agent_orchestrator = build_agent_orchestrator(selection_service=service)
+cognitive_service = CognitiveAdaptationService(
+    audit_log=service.audit_log,
+    shared_data_sink=agent_orchestrator.shared_data_sink,
+    retriever=agent_orchestrator.retriever,
+    repository=build_adaptation_repository(agent_orchestrator.settings),
+)
 
 
 @app.get("/health")
@@ -58,6 +72,44 @@ def score(request: ScoreRequest) -> RosterRecommendation:
 @app.post("/v1/score", response_model=RosterRecommendation)
 def score_v1(request: ScoreRequest) -> RosterRecommendation:
     return score(request)
+
+
+@app.post("/v1/adaptations", response_model=CognitiveAdaptationResponse)
+def create_adaptation(request: CognitiveAdaptationRequest) -> CognitiveAdaptationResponse:
+    try:
+        return cognitive_service.adapt(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/adaptations/{adaptation_id}", response_model=CognitiveAdaptationResponse)
+def get_adaptation(adaptation_id: str) -> CognitiveAdaptationResponse:
+    adaptation = cognitive_service.get(adaptation_id)
+    if adaptation is None:
+        raise HTTPException(status_code=404, detail="adaptation not found")
+    return adaptation
+
+
+@app.get("/v1/missions/{mission_id}/adaptations", response_model=list[CognitiveAdaptationResponse])
+def list_mission_adaptations(
+    mission_id: str,
+    limit: int = 50,
+) -> list[CognitiveAdaptationResponse]:
+    return cognitive_service.list_by_mission(mission_id, limit=limit)
+
+
+@app.post("/v1/adaptations/{adaptation_id}/approval", response_model=ScenarioApprovalResponse)
+def record_adaptation_approval(
+    adaptation_id: str,
+    request: ScenarioApprovalRequest,
+) -> ScenarioApprovalResponse:
+    try:
+        approval = cognitive_service.record_approval(adaptation_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if approval is None:
+        raise HTTPException(status_code=404, detail="adaptation not found")
+    return approval
 
 
 @app.post("/v1/agent-runs", response_model=AgentRun)

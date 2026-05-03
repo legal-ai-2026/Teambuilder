@@ -1,11 +1,16 @@
-# Architecture - Talent / Soldier Selection Engine
+# Architecture - Cognitive Mission Adaptation Engine
 
 ## Purpose
 
-Spire Talent Engine is an operational FastAPI service for mission roster
-recommendations. Given a mission, roles, and a candidate pool, it returns a
-primary roster, second-choice roster, model disagreement, confidence, risk
-factors, fairness audit, career forecast, and trace metadata.
+System 2 is an operational FastAPI service for developmental training
+adaptation. Given live field evidence, it estimates cognitive and team state,
+recommends instructor-approved scenario injects, and records traceable
+provenance for later AAR and drift review.
+
+The existing roster scorer remains available as a downstream talent lane. Given
+a mission, roles, and a candidate pool, it returns a primary roster,
+second-choice roster, model disagreement, confidence, risk factors, fairness
+audit, career forecast, and trace metadata.
 
 The service is advisory. It does not publish orders, slate personnel, or replace
 commander and career-manager judgment.
@@ -15,7 +20,38 @@ Cross-application data sharing is governed by
 pgvector chunks, and FalkorDB facts they used so another app can validate or
 replay the decision from canonical IDs.
 
-## Runtime Flow
+## Adaptation Runtime Flow
+
+```text
+Frontend JSON / field evidence
+    |
+    | POST /v1/adaptations
+    v
+Evidence normalization
+    |
+    v
+Cognitive state estimator
+    |
+    v
+Scenario director
+    |
+    v
+Safety/doctrine auditor
+    |
+    +--> blocked recommendations
+    +--> approval-ready recommendations
+    |
+    v
+Instructor approve / reject
+    |
+    v
+entity_update_events + AAR/lessons lane
+```
+
+The live adaptation loop is advisory. It does not autonomously push new
+scenario injects.
+
+## Roster Runtime Flow
 
 ```text
 API client
@@ -57,7 +93,10 @@ The active package is `src/system2/`.
 | Module | Role |
 |---|---|
 | `api.py` | FastAPI routes, versioned scoring endpoint, health checks, kill switch endpoints |
+| `adaptation_store.py` | In-memory and Postgres repositories for adaptation lookup and mission history |
+| `cognitive.py` | Evidence fusion, cognitive state estimation, scenario direction, safety/doctrine gating, and adaptation approval |
 | `service.py` | Orchestrates scoring, assignment, fairness, career forecast, trace metadata, and audit logging |
+| `candidate_pool.py` | Resolves `candidate_pool_id` into canonical soldiers, role slots, and source references |
 | `models.py` | Pydantic request/response contracts and enums |
 | `data.py` | Default role requirements and deterministic synthetic candidate generation |
 | `scoring.py` | Role-fit model, TabPFN-compatible estimate, Bayes-compatible estimate, blend, assignment solver |
@@ -76,6 +115,8 @@ Canonical endpoints:
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/healthz` | Liveness and kill-switch state |
+| `POST` | `/v1/adaptations` | Cognitive state estimation and scenario-inject recommendation |
+| `POST` | `/v1/adaptations/{adaptation_id}/approval` | Instructor approval or rejection for a scenario inject |
 | `POST` | `/v1/score` | Mission roster scoring |
 | `POST` | `/v1/agent-runs` | Agentic recommendation workflow |
 | `GET` | `/v1/agent-runs/{run_id}` | Agent run lookup |
@@ -101,6 +142,12 @@ Inbound request contracts reject unknown fields with `extra="forbid"`.
 
 Core contracts:
 
+- `CognitiveAdaptationRequest`
+- `TrainingEvidence`
+- `CognitiveStateSnapshot`
+- `ScenarioInjectRecommendation`
+- `CognitiveAdaptationResponse`
+- `ScenarioApprovalRequest`
 - `ScoreRequest`
 - `Soldier`
 - `RoleRequirement`
@@ -122,6 +169,43 @@ Every candidate assessment includes:
 - risk factors
 - narrative
 - second-choice ID for primary roster entries
+
+Every adaptation response includes:
+
+- state estimates for sensemaking, critical thinking, systems thinking,
+  leadership communication, execution reliability, cognitive load,
+  sleep/fatigue, nutrition strain, and team trust
+- the primary developmental dimension and likely failure mode
+- candidate scenario injects with expected developmental effect, risk,
+  confidence, safety checks, and doctrine rationale
+- blocked recommendations when the safety/doctrine auditor rejects an option
+- trace metadata and source hashes for replay
+
+## Cognitive Adaptation
+
+`cognitive.py` implements the hackathon-ready vertical slice of the
+developmental loop. It accepts normalized `TrainingEvidence` from voice notes,
+transcripts, OCR text, checklists, patrol summaries, AARs, weather, terrain, or
+structured mission events. The estimator updates a multidimensional learner and
+team state over Army-relevant dimensions:
+
+- `sensemaking`
+- `critical_thinking`
+- `systems_thinking`
+- `leadership_communication`
+- `execution_reliability`
+- `cognitive_load`
+- `sleep_fatigue`
+- `nutrition_strain`
+- `team_trust`
+
+The scenario director produces up to three options for the current weakest
+skill dimension: a direct pressure inject, a lower-noise skill-isolation
+repetition, and a transfer test in a different tactical context. The
+safety/doctrine auditor blocks options that exceed `max_safety_risk`, violate
+blocked inject types, or conflict with configured environmental-stress limits.
+The service writes a hash-chained audit record and an `entity_update_events`
+row for each generated adaptation and approval decision.
 
 ## Scoring
 
@@ -159,9 +243,11 @@ Runtime backend selection is environment-driven:
 
 | Backend | Env | Operational adapter | Local fallback |
 |---|---|---|---|
+| Adaptations | `ADAPTATION_REPOSITORY_BACKEND=postgres` | Postgres adaptation repository | In-memory repository |
 | Audit log | `AUDIT_BACKEND=postgres` | Postgres hash-chain audit table | JSONL file audit |
 | Agent runs | `AGENT_REPOSITORY_BACKEND=postgres` | Postgres JSONB repository | In-memory repository |
 | Agent state | `AGENT_STATE_BACKEND=redis` | Redis status and locks | In-memory state |
+| Candidate pools | `CANDIDATE_POOL_BACKEND=postgres` | Postgres candidate and role projections | Synthetic/local resolver |
 | Retrieval | `RETRIEVAL_BACKEND=pgvector` | Postgres/pgvector context chunks | Packaged local context |
 | Graph | `GRAPH_BACKEND=falkordb` | FalkorDB graph queries | Request-local graph facts |
 | Shared data | `SHARED_DATA_BACKEND=postgres` | Postgres update events and decision snapshots | In-memory sink |
@@ -222,6 +308,12 @@ Every response includes:
 - source references for mission, candidate, role, retrieval, and graph inputs
 - input source hashes keyed by source reference
 
+When `candidate_pool_id` is provided, the Postgres resolver reads
+`candidate_pools_current`, `soldiers_current`, and `role_slots_current`. A
+resolved pool replaces synthetic fallback references with canonical Postgres
+source refs and hashes. In Postgres mode, missing pools fail the request instead
+of silently scoring generated candidates.
+
 Audit logging is hash-chained. The file backend writes redacted JSONL records.
 The Postgres backend writes the same canonical record into `system2_audit_log`.
 Both remove protected attributes and hash clear unit/MOS values before
@@ -238,5 +330,5 @@ System 1 can supply longitudinal training features through canonical Postgres
 projections, pgvector context, and FalkorDB relationships. System 3 can consume
 approved recommendations and assignment evidence from `entity_update_events`
 and `decision_snapshots`. This service should still score a request when those
-systems are unavailable, as long as the request contains the candidate and role
-data needed for scoring.
+systems are unavailable, as long as the request contains explicit candidate and
+role data or the local candidate-pool backend is intentionally enabled.
