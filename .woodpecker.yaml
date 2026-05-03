@@ -30,18 +30,27 @@ steps:
       - |
         i=0
         while [ "$i" -lt 36 ]; do
+          GENERATION=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.metadata.generation}')
+          OBSERVED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.observedGeneration}')
           DESIRED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.spec.replicas}')
           UPDATED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.updatedReplicas}')
           AVAILABLE=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.availableReplicas}')
-          if [ "${UPDATED:-0}" = "${DESIRED:-1}" ] && [ "${AVAILABLE:-0}" = "${DESIRED:-1}" ]; then
+          if [ "${OBSERVED:-0}" = "${GENERATION:-1}" ] && [ "${UPDATED:-0}" = "${DESIRED:-1}" ] && [ "${AVAILABLE:-0}" = "${DESIRED:-1}" ]; then
             kubectl get deployment/teambuilder --namespace=staging
             exit 0
           fi
           i=$((i + 1))
           sleep 5
         done
+        GENERATION=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.metadata.generation}')
+        OBSERVED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.observedGeneration}')
+        DESIRED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.spec.replicas}')
+        UPDATED=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.updatedReplicas}')
+        AVAILABLE=$(kubectl get deployment/teambuilder --namespace=staging -o jsonpath='{.status.availableReplicas}')
         kubectl get deployment/teambuilder --namespace=staging
-        kubectl get pods --namespace=staging -l app=teambuilder
+        if [ "${OBSERVED:-0}" = "${GENERATION:-1}" ] && [ "${UPDATED:-0}" = "${DESIRED:-1}" ] && [ "${AVAILABLE:-0}" = "${DESIRED:-1}" ]; then
+          exit 0
+        fi
         exit 1
     environment:
       K8S_TOKEN:
