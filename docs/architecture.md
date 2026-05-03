@@ -153,13 +153,15 @@ Runtime backend selection is environment-driven:
 
 | Backend | Env | Operational adapter | Local fallback |
 |---|---|---|---|
+| Audit log | `AUDIT_BACKEND=postgres` | Postgres hash-chain audit table | JSONL file audit |
 | Agent runs | `AGENT_REPOSITORY_BACKEND=postgres` | Postgres JSONB repository | In-memory repository |
 | Agent state | `AGENT_STATE_BACKEND=redis` | Redis status and locks | In-memory state |
 | Retrieval | `RETRIEVAL_BACKEND=pgvector` | Postgres/pgvector context chunks | Packaged local context |
 | Graph | `GRAPH_BACKEND=falkordb` | FalkorDB graph queries | Request-local graph facts |
 
-Postgres remains canonical. Redis is only ephemeral coordination state.
-FalkorDB graph facts should be rebuildable from canonical records.
+Postgres remains canonical for durable agent runs and audit records. Redis is
+only ephemeral coordination state. FalkorDB graph facts should be rebuildable
+from canonical records.
 
 Context ingestion accepts text chunks and optional precomputed embedding
 vectors. This service stores and retrieves those chunks; it does not generate
@@ -211,8 +213,10 @@ Every response includes:
 - calibration bins
 - disagreement histogram
 
-`AuditLog` writes redacted JSONL records and links them with hashes. It removes
-protected attributes and hashes clear unit/MOS values before persistence.
+Audit logging is hash-chained. The file backend writes redacted JSONL records.
+The Postgres backend writes the same canonical record into `system2_audit_log`.
+Both remove protected attributes and hash clear unit/MOS values before
+persistence.
 
 ## Cross-System Boundaries
 

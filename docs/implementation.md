@@ -161,8 +161,10 @@ Builds trace summaries for calibration bins and model-disagreement histogram.
 
 `audit.py`
 
-Writes redacted hash-chained JSONL records. The default path is
-`/tmp/system2_audit.jsonl`; set `SYSTEM2_AUDIT_LOG` in deployed environments.
+Writes redacted hash-chained audit records. The file backend writes JSONL to
+`SYSTEM2_AUDIT_LOG`, defaulting to `/tmp/system2_audit.jsonl`. The Postgres
+backend writes the same canonical record to `system2_audit_log`; enable it with
+`AUDIT_BACKEND=postgres` and `DATABASE_URL`.
 
 `registry.py`
 
@@ -176,6 +178,8 @@ mapping.
 - Unit and MOS are hashed in persisted audit payloads.
 - Confidence and model disagreement are mandatory response fields.
 - Fairness audit results are returned on every successful score response.
+- Audit records are hash-chained and redact protected attributes before
+  persistence.
 - Narrative code explains only; it does not decide.
 - Admin endpoints must be protected outside this package.
 - Context and graph ingestion endpoints must be protected outside this package.

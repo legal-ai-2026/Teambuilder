@@ -33,6 +33,7 @@ DATABASE_URL=postgresql://app_user:password@pgbouncer.internal:6432/system2
 REDIS_URL=redis://:password@redis.internal:6379/0
 FALKORDB_URL=redis://:password@falkordb.internal:6379
 PGVECTOR_ENABLED=true
+AUDIT_BACKEND=postgres
 AGENT_REPOSITORY_BACKEND=postgres
 AGENT_STATE_BACKEND=redis
 RETRIEVAL_BACKEND=pgvector
@@ -156,6 +157,7 @@ curl -X POST http://127.0.0.1:8000/v1/graph/facts \
 The agent stack uses these adapters:
 
 - `PostgresAgentRunRepository` for durable agent runs.
+- `PostgresAuditLog` for durable hash-chained audit records.
 - `RedisAgentStateStore` for ephemeral run status and distributed locks.
 - `PgVectorContextRetriever` for retrieval over externally embedded context
   chunks.
