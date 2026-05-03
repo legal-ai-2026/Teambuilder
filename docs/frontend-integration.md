@@ -18,12 +18,54 @@ System 2 has three lanes:
   `/v1/score` and `/v1/agent-runs`, but they should be treated as downstream
   decision support rather than the main live training loop.
 
+The operational twin is the evidence spine behind the deployment lane. The
+frontend can call `/v1/operational-twin/runs` directly for an advanced operator
+view, but most commander-facing screens should use
+`/v1/deployment-recommendations` and link to the source twin through
+`source_twin_run_id`.
+
+## Program Functionality
+
+System 2 turns processed mission evidence into governed decision-support
+records. It does not ingest raw audio, raw images, or final orders.
+
+The implemented program functions are:
+
+- Normalize processed System 1 observations, transcripts, OCR text, telemetry,
+  weather, terrain, and readiness into operational twin artifacts and
+  observations.
+- Estimate current cognitive/team state, uncertainty, readiness, fatigue,
+  situational clarity, cohesion, leader decision quality, and mission tempo
+  risk.
+- Draft exactly three governed scenario or deployment options, then attach
+  critic status, risk, confidence, rationale, source refs, decision quality,
+  utility, reliance guidance, and agent trace.
+- Recommend training adaptations for instructors, including scenario injects
+  that can be approved or rejected.
+- Recommend deployment posture for an individual or platoon, including
+  `deploy`, `deploy_with_controls`, `hold`, and `escalate_review` states.
+- Record human decisions, outcomes, AAR notes, safety incidents, near misses,
+  and draft lessons learned for later review.
+- Score rosters and durable roster agent runs as a secondary talent-support
+  lane.
+- Ingest context chunks and graph facts for retrieval/graph enrichment.
+
+All consequential recommendations are advisory. The frontend must keep a named
+human in the loop for scenario injects, deployment posture, roster approval,
+and outcome/AAR capture.
+
 ## Base Contract
 
 Default local API:
 
 ```text
 http://127.0.0.1:8000
+```
+
+Current homelab staging API:
+
+```text
+http://192.168.0.253
 ```
 
 Interactive OpenAPI docs:
@@ -40,6 +82,10 @@ http://127.0.0.1:8000/openapi.json
 
 All request models are strict. Unknown JSON fields are rejected. Timestamps are
 ISO 8601 strings. Numeric scores and risks are usually `0.0` to `1.0`.
+
+The staging deployment currently runs with Postgres, pgvector, Redis, FalkorDB,
+and OpenAI configured. Check `GET /v1/healthz` at startup and surface the
+reported backend/provider state in an operator diagnostics view.
 
 ## Authentication And CORS
 
@@ -361,6 +407,37 @@ Compatibility aliases also exist:
 - `POST /score`
 
 Prefer the `/v1/*` routes in new frontend code.
+
+## Capability Map
+
+System 2 is not a chat backend. It is a mission decision-support API with
+explicit lifecycle records. Frontend state should mirror these backend
+capabilities:
+
+| Capability | Primary Endpoints | Input Contract | Output Contract |
+|---|---|---|---|
+| Health and diagnostics | `GET /v1/healthz` | none | service status, kill-switch state, backend selection, OpenAI/provider state |
+| Cognitive adaptation | `POST /v1/adaptations`, adaptation get/list/approval routes | processed training evidence and instructor/team context | cognitive state, three scenario inject recommendations when safe, blocked recommendations, trace, approval lifecycle |
+| Operational twin | `POST /v1/operational-twin/runs`, twin get/decision/outcome routes | processed artifacts, observations, environment, controls, mode | normalized artifacts/observations, provisional state estimate, evidence bundle, three governed scenario options, agent trace, decision/outcome lifecycle |
+| Deployment recommendation | `POST /v1/deployment-recommendations`, deployment get/list/approval/outcome routes | mission context, terrain, weather, readiness, processed System 1 observations | platoon and individual deployment posture, required controls, option comparison, source twin ID, agent trace, approval/outcome lifecycle |
+| Roster scoring | `POST /v1/score` | candidate pool ID or explicit/synthetic candidates and role slots | primary roster, second-choice roster, fairness audit, career forecast, source refs |
+| Durable roster workflow | `POST /v1/agent-runs`, agent get/approval routes | `ScoreRequest` plus approval requirement | stored run, step evidence, roster recommendation, approval status |
+| Context setup | `POST /v1/context/chunks` | externally embedded or text-only chunks | pgvector/local ingest count and chunk IDs |
+| Graph setup | `POST /v1/graph/facts` | derived subject-predicate-object facts | FalkorDB/local ingest count |
+| Admin kill switch | `/admin/disable`, `/admin/enable` | no body | scoring disabled/enabled flag |
+
+All consequential outputs include some combination of:
+
+- `decision_quality`: framing, evidence sufficiency, uncertainty, reversibility,
+  value-of-information, and readiness guidance.
+- `utility_estimate`: expected benefit, downside risk, and net utility.
+- `reliance_guidance`: human reliance posture and required checks.
+- `source_refs` or evidence refs: source records the UI should make inspectable.
+- `agent_trace`: provider, model, stage, status, hashes, latency, and fallback
+  reason for agentic stages.
+
+The frontend should treat these fields as first-class UI data. They are not
+debug-only metadata.
 
 ## Dashboard Data Loading
 
@@ -886,6 +963,344 @@ Frontend behavior:
   options, because they explain the posture.
 - Render `reliance_guidance.human_accountability` near the final action button.
 
+## Operational Twin
+
+The operational twin is the lower-level evidence and trace workflow. It is
+implemented and deployed. Use it directly for advanced operator screens,
+engineering diagnostics, or when another service needs a governed option set
+without the deployment posture wrapper.
+
+The deployment recommendation endpoint calls this workflow internally in
+mission mode and stores the returned `source_twin_run_id`.
+
+### Create Operational Twin Run
+
+```http
+POST /v1/operational-twin/runs
+Content-Type: application/json
+```
+
+Minimal training-mode request:
+
+```json
+{
+  "mission_id": "foundry-twin-demo",
+  "operator_id": "instructor-1",
+  "mode": "training",
+  "team_id": "alpha-1",
+  "training_objective": "Train systems thinking under fatigue.",
+  "artifacts": [
+    {
+      "kind": "system1_observation",
+      "content": "System 1 observation: two missed comms acknowledgements. Leader lost the relationship between terrain, timing, support, civilian movement, and delayed comms relay under fatigue."
+    },
+    {
+      "kind": "sleep_food_log",
+      "content": "Median team sleep was 4.1 hours.",
+      "metadata": {
+        "sleep_hours": 4.1
+      }
+    }
+  ],
+  "environment": {
+    "weather": "cold wind",
+    "terrain": "rough wooded draw",
+    "temperature_c": 3,
+    "wind_speed": 18
+  },
+  "require_human_approval": true
+}
+```
+
+Mission-mode request:
+
+```json
+{
+  "mission_id": "convoy-rehearsal",
+  "operator_id": "planner-1",
+  "mode": "mission",
+  "team_id": "platoon-alpha",
+  "artifacts": [
+    {
+      "kind": "mission_context",
+      "content": "Time-sensitive movement with constrained visibility and support coordination risk."
+    },
+    {
+      "kind": "manual_note",
+      "content": "Team readiness is green except moderate fatigue and delayed comms acknowledgement."
+    }
+  ],
+  "environment": {
+    "terrain": "wooded draw",
+    "weather": "cold wind"
+  }
+}
+```
+
+Allowed `mode` values:
+
+- `training`: produces scenario inject options.
+- `mission`: produces advisory rehearsal variants or mission COA-style options.
+
+Allowed artifact `kind` values:
+
+- `transcript`
+- `ocr_text`
+- `telemetry`
+- `weather`
+- `sleep_food_log`
+- `manual_note`
+- `system1_observation`
+- `mission_context`
+- `terrain`
+
+Optional explicit `observations` may be sent when another service has already
+normalized the evidence:
+
+```json
+{
+  "kind": "manual_note",
+  "content": {
+    "summary": "Leader missed a delayed relay acknowledgement under moderate fatigue."
+  },
+  "source_artifact_ids": ["art-123"],
+  "confidence": 0.84,
+  "subject_ref": {
+    "subject_type": "team",
+    "subject_id": "alpha-1"
+  }
+}
+```
+
+Allowed observation `kind` values:
+
+- `voice_fact`
+- `ocr_fact`
+- `telemetry_fact`
+- `weather_fact`
+- `sleep_food_fact`
+- `image_fact`
+- `manual_note`
+
+Important response fields:
+
+```json
+{
+  "twin_run_id": "twin-...",
+  "mission_id": "foundry-twin-demo",
+  "mode": "training",
+  "team_id": "alpha-1",
+  "status": "draft",
+  "artifacts": [],
+  "observations": [],
+  "environment_state": {},
+  "state_estimate": {
+    "state_vector": {
+      "fatigue_burden": 0.69,
+      "situational_clarity": 0.41,
+      "cohesion": 0.63,
+      "leader_decision_quality": 0.52,
+      "mission_tempo_risk": 0.67,
+      "training_challenge_gap": -0.28
+    },
+    "uncertainty": {
+      "overall": 0.19,
+      "by_field": {}
+    }
+  },
+  "evidence_bundle": {
+    "bundle_id": "bundle-...",
+    "policy_checks": {},
+    "hash_chain": {}
+  },
+  "scenario_options": [],
+  "decisions": [],
+  "outcomes": [],
+  "lessons_learned": [],
+  "agent_trace": []
+}
+```
+
+The deployed OpenAI-backed path runs four agent stages when
+`SYSTEM2_AGENTIC_PROVIDER=auto` and `OPENAI_API_KEY` is configured:
+
+| Stage | UI Label | Output |
+|---|---|---|
+| `perception` | Evidence normalization | source-linked observations |
+| `state` | State estimate | latent state vector and uncertainty |
+| `scenario` | Option drafting | exactly three governed options |
+| `critic` | Safety/grounding review | critic status, reasons, risk, confidence |
+
+Each `agent_trace` item includes:
+
+```json
+{
+  "stage": "scenario",
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "status": "completed",
+  "summary": "OpenAI scenario director drafted exactly three governed options.",
+  "input_hash": "sha256:...",
+  "output_hash": "sha256:...",
+  "duration_ms": 1234,
+  "fallback_reason": null,
+  "started_at": "2026-05-03T18:30:00Z",
+  "completed_at": "2026-05-03T18:30:01Z"
+}
+```
+
+Trace statuses:
+
+- `completed`: stage succeeded with configured provider.
+- `fallback`: deterministic output was retained because the agent provider was
+  unavailable or returned invalid data.
+- `failed`: reserved for stage failure records.
+
+Scenario option fields:
+
+```json
+{
+  "scenario_option_id": "opt-...",
+  "mission_id": "foundry-twin-demo",
+  "option_type": "training_inject",
+  "title": "Targeted systems-thinking inject",
+  "narrative": "Add delayed comms relay and flank civilian movement while holding physical difficulty steady.",
+  "predicted_effect": {
+    "target_state_change": "Improve systems thinking under bounded fatigue.",
+    "expected_learning_value": 0.84,
+    "expected_mission_benefit": null
+  },
+  "risk_score": 0.46,
+  "confidence": 0.81,
+  "critic_status": "modify",
+  "critic_reasons": ["Keep the inject targeted; do not raise general difficulty."],
+  "evidence_bundle_id": "bundle-...",
+  "status": "draft"
+}
+```
+
+Option types:
+
+- `training_inject`
+- `rehearsal_variant`
+- `mission_coa`
+
+Critic statuses:
+
+- `pass`: option is grounded and within safety/governance boundaries.
+- `modify`: usable with changes or controls.
+- `escalate`: route to higher review.
+- `reject`: do not approve; backend also blocks approval of rejected options.
+
+### Fetch Operational Twin Run
+
+```http
+GET /v1/operational-twin/runs/{twin_run_id}
+```
+
+Use this for refresh, evidence drawers, and deployment drill-down from
+`source_twin_run_id`. A missing run returns `404`.
+
+### Record Option Decision
+
+```http
+POST /v1/operational-twin/runs/{twin_run_id}/options/{scenario_option_id}/decision
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "scenario_option_id": "opt-...",
+  "decision": "approved",
+  "actor_id": "instructor-1",
+  "comment": "Approved after reviewing evidence, controls, and critic reasons."
+}
+```
+
+Allowed `decision` values:
+
+- `approved`
+- `rejected`
+- `escalated`
+
+Response:
+
+```json
+{
+  "twin_run_id": "twin-...",
+  "scenario_option_id": "opt-...",
+  "status": "approved",
+  "decision": {
+    "decision_id": "decision-...",
+    "actor_id": "instructor-1",
+    "decision": "approved",
+    "comment": "Approved after reviewing evidence, controls, and critic reasons."
+  },
+  "lesson_learned": {}
+}
+```
+
+Frontend behavior:
+
+- Only show approve controls for `status = "draft"`.
+- If `critic_status = "reject"`, disable approve and show the backend reason.
+- Require `actor_id` and `comment`.
+- Refresh the twin after decision so option statuses and lessons are current.
+
+### Capture Operational Twin Outcome
+
+```http
+POST /v1/operational-twin/runs/{twin_run_id}/outcome
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "selected_option_id": "opt-...",
+  "observed_outcome_summary": "The team completed the inject with no safety incident and improved second-order cue recognition.",
+  "instructor_rating": 4,
+  "safety_incident": false,
+  "targeted_state_improvement_estimate": 0.3,
+  "aar_notes": "Comms confirmation before the branch reduced the delayed-relay error.",
+  "actor_id": "instructor-1"
+}
+```
+
+Response:
+
+```json
+{
+  "twin_run_id": "twin-...",
+  "selected_option_id": "opt-...",
+  "status": "outcome_recorded",
+  "outcome": {
+    "outcome_id": "outcome-...",
+    "instructor_rating": 4,
+    "safety_incident": false,
+    "targeted_state_improvement_estimate": 0.3
+  },
+  "lesson_learned": {}
+}
+```
+
+Outcome capture is valid only for an approved option. If the selected option is
+still `draft`, `rejected`, or `escalated`, the backend returns `409`.
+
+Operational twin UI behavior:
+
+- Render artifacts and observations separately so users can see what was raw
+  processed input versus derived evidence.
+- Render `evidence_bundle.policy_checks` as governance badges.
+- Render `evidence_bundle.hash_chain` and `agent_trace` in the inspection
+  drawer.
+- Show all three options even when one is selected.
+- Treat options as draft until the decision endpoint records a named actor.
+- Show outcome capture only after an option is approved.
+
 ## Roster Scoring
 
 ### Direct Score
@@ -1164,13 +1579,30 @@ Response:
     },
     "audit_log_path": "/tmp/system2_audit.jsonl",
     "backends": {
+      "adaptation_repository": "postgres",
       "audit": "postgres",
       "agent_repository": "postgres",
       "agent_state": "redis",
       "candidate_pool": "postgres",
+      "deployment_repository": "postgres",
+      "operational_twin_repository": "postgres",
       "retrieval": "pgvector",
       "graph": "falkordb",
       "shared_data": "postgres"
+    },
+    "security": {
+      "api_key_required": true,
+      "admin_api_key_required": true,
+      "cors_allowed_origins": ["http://localhost:3000"]
+    },
+    "agentic_runtime": {
+      "provider": "auto",
+      "max_retries": 1,
+      "timeout_seconds": 45.0,
+      "input_boundary": "processed_system1_data",
+      "openai_configured": true,
+      "openai_model": "gpt-5.5",
+      "openai_base_url": "https://api.openai.com/v1"
     }
   }
 }
@@ -1190,8 +1622,11 @@ POST /admin/disable
 POST /admin/enable
 ```
 
-These routes are not self-authenticating. They must be protected before any
-shared environment or public frontend uses them.
+These routes require the admin API key only when `SYSTEM2_ADMIN_API_KEY` or
+`SYSTEM2_API_KEY` is configured. If health reports
+`security.admin_api_key_required = false`, admin routes are open to any caller
+that can reach the service and must not be exposed through a shared or public
+frontend.
 
 ## Error Handling
 
@@ -1244,6 +1679,35 @@ type DeploymentPosture =
   | "deploy_with_controls"
   | "hold"
   | "escalate_review";
+type TwinMode = "training" | "mission";
+type TwinDecision = "approved" | "rejected" | "escalated";
+type TwinArtifactKind =
+  | "transcript"
+  | "ocr_text"
+  | "telemetry"
+  | "weather"
+  | "sleep_food_log"
+  | "manual_note"
+  | "system1_observation"
+  | "mission_context"
+  | "terrain";
+type TwinObservationKind =
+  | "voice_fact"
+  | "ocr_fact"
+  | "telemetry_fact"
+  | "weather_fact"
+  | "sleep_food_fact"
+  | "image_fact"
+  | "manual_note";
+type ScenarioCriticStatus = "pass" | "modify" | "escalate" | "reject";
+type ScenarioOptionStatus = "draft" | "approved" | "rejected" | "escalated";
+type ScenarioOptionType = "training_inject" | "rehearsal_variant" | "mission_coa";
+type DecisionReadiness = "ready" | "review" | "escalate";
+type ReliancePosture =
+  | "accept_with_review"
+  | "challenge_model"
+  | "defer_for_more_info"
+  | "escalate";
 
 type CognitiveDimension =
   | "sensemaking"
@@ -1266,6 +1730,63 @@ type EvidenceSourceType =
   | "weather"
   | "terrain"
   | "structured_event";
+
+interface DecisionQualityAssessment {
+  readiness: DecisionReadiness;
+  framing_completeness: number;
+  evidence_sufficiency: number;
+  uncertainty_level: number;
+  reversibility_score: number;
+  value_of_information: string;
+  escalation_reasons: string[];
+  notes: string[];
+}
+
+interface DecisionUtilityEstimate {
+  expected_benefit: number;
+  expected_harm: number;
+  false_positive_cost: number;
+  false_negative_cost: number;
+  delay_cost: number;
+  net_utility_score: number;
+  rationale: string;
+}
+
+interface RelianceGuidance {
+  posture: ReliancePosture;
+  rationale: string;
+  required_checks: string[];
+  override_allowed: boolean;
+  human_accountability: string;
+}
+
+interface ControlProperties {
+  classification_marking?: string;
+  releasability?: string;
+  need_to_know_domain?: string;
+  source_handling_code?: string;
+}
+
+interface SourceReference {
+  ref: string;
+  role: string;
+  source_hash?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+interface LessonLearned {
+  lesson_id: string;
+  mission_id: string;
+  category: string;
+  summary: string;
+  root_cause: string;
+  recommended_training_delta: string;
+  recommended_mission_delta: string;
+  severity: RiskLevel;
+  status: "draft" | "approved";
+  evidence_bundle_id: string;
+  created_at_utc: string;
+}
 
 interface TrainingEvidence {
   evidence_id: string;
@@ -1315,6 +1836,209 @@ interface ScenarioInjectRecommendation {
   confidence: Confidence;
   status: "pending_approval" | "blocked";
   block_reason?: string | null;
+  decision_quality: DecisionQualityAssessment;
+  utility_estimate: DecisionUtilityEstimate;
+  reliance_guidance: RelianceGuidance;
+}
+
+interface CognitiveAdaptationResponse {
+  adaptation_id: string;
+  mission_id: string;
+  team_id: string;
+  status: "pending_approval" | "completed" | "rejected" | "failed";
+  state: {
+    snapshot_id: string;
+    mission_id: string;
+    team_id: string;
+    target_soldier_ids: string[];
+    primary_development_dimension: CognitiveDimension;
+    likely_failure_mode: string;
+    state_summary: string;
+    generated_at: string;
+    estimates: Array<{
+      dimension: CognitiveDimension;
+      current_score: number;
+      development_priority: number;
+      confidence: Confidence;
+      trend: "improving" | "stable" | "declining" | "unknown";
+      rationale: string;
+      evidence_refs: string[];
+    }>;
+  };
+  recommendations: ScenarioInjectRecommendation[];
+  blocked_recommendations: ScenarioInjectRecommendation[];
+  trace: Record<string, unknown>;
+  approval_required: boolean;
+  decision_quality: DecisionQualityAssessment;
+  utility_estimate: DecisionUtilityEstimate;
+  reliance_guidance: RelianceGuidance;
+}
+
+interface ScenarioApprovalResponse {
+  adaptation_id: string;
+  recommendation_id: string;
+  status: "completed" | "rejected";
+  decision: Decision;
+  approved_inject?: ScenarioInjectRecommendation | null;
+  decided_at: string;
+}
+
+interface ArtifactInput {
+  artifact_id?: string | null;
+  kind: TwinArtifactKind;
+  uri?: string | null;
+  content?: string | null;
+  captured_at_utc?: string;
+  source_system?: string;
+  controls?: ControlProperties;
+  metadata?: Record<string, unknown>;
+}
+
+interface ObservationInput {
+  observation_id?: string | null;
+  subject_ref?: {
+    subject_type: "person" | "team" | "mission" | "environment";
+    subject_id: string;
+  } | null;
+  source_artifact_ids?: string[];
+  kind: TwinObservationKind;
+  content: Record<string, unknown>;
+  timestamp_utc?: string;
+  geo?: Record<string, unknown> | null;
+  confidence?: number;
+  controls?: ControlProperties;
+}
+
+interface AgentStageTrace {
+  stage: string;
+  provider: string;
+  model: string;
+  status: "completed" | "fallback" | "failed";
+  summary: string;
+  error?: string | null;
+  input_hash?: string | null;
+  output_hash?: string | null;
+  duration_ms?: number | null;
+  fallback_reason?: string | null;
+  started_at: string;
+  completed_at: string;
+}
+
+interface ScenarioOption {
+  scenario_option_id: string;
+  mission_id: string;
+  option_type: ScenarioOptionType;
+  title: string;
+  narrative: string;
+  predicted_effect: {
+    target_state_change: string;
+    expected_learning_value?: number | null;
+    expected_mission_benefit?: number | null;
+  };
+  risk_score: number;
+  confidence: number;
+  critic_status: ScenarioCriticStatus;
+  critic_reasons: string[];
+  evidence_bundle_id: string;
+  status: ScenarioOptionStatus;
+  controls?: ControlProperties;
+  decision_quality: DecisionQualityAssessment;
+  utility_estimate: DecisionUtilityEstimate;
+  reliance_guidance: RelianceGuidance;
+}
+
+interface OperationalTwinRequest {
+  mission_id: string;
+  operator_id: string;
+  mode?: TwinMode;
+  team_id: string;
+  training_objective?: string | null;
+  artifacts?: ArtifactInput[];
+  observations?: ObservationInput[];
+  environment?: Record<string, unknown>;
+  controls?: ControlProperties;
+  require_human_approval?: boolean;
+  decision_context?: Record<string, unknown> | null;
+}
+
+interface OperationalTwinResponse {
+  twin_run_id: string;
+  mission_id: string;
+  mode: TwinMode;
+  team_id: string;
+  status: "draft" | "partially_decided" | "completed" | "outcome_recorded";
+  artifacts: Array<Record<string, unknown>>;
+  observations: Array<Record<string, unknown>>;
+  environment_state?: Record<string, unknown> | null;
+  state_estimate: {
+    state_estimate_id: string;
+    subject_type: "person" | "team" | "mission";
+    subject_id: string;
+    state_vector: {
+      fatigue_burden: number;
+      situational_clarity: number;
+      cohesion: number;
+      leader_decision_quality: number;
+      mission_tempo_risk: number;
+      training_challenge_gap: number;
+    };
+    uncertainty: {
+      overall: number;
+      by_field: Record<string, number>;
+    };
+    evidence_bundle_id: string;
+    model_version: string;
+    valid_at_utc: string;
+    controls?: ControlProperties;
+  };
+  evidence_bundle: Record<string, unknown>;
+  scenario_options: ScenarioOption[];
+  decisions: Array<Record<string, unknown>>;
+  outcomes: Array<Record<string, unknown>>;
+  lessons_learned: Array<Record<string, unknown>>;
+  agent_trace: AgentStageTrace[];
+  decision_quality: DecisionQualityAssessment;
+  utility_estimate: DecisionUtilityEstimate;
+  reliance_guidance: RelianceGuidance;
+  created_at_utc: string;
+  updated_at_utc: string;
+}
+
+interface ScenarioOptionDecisionResponse {
+  twin_run_id: string;
+  scenario_option_id: string;
+  status: ScenarioOptionStatus;
+  decision: {
+    decision_id: string;
+    target_object_id: string;
+    actor_id: string;
+    decision: TwinDecision;
+    comment: string;
+    timestamp_utc: string;
+    evidence_bundle_id: string;
+  };
+  lesson_learned?: LessonLearned | null;
+  decided_at_utc: string;
+}
+
+interface OperationalTwinOutcomeResponse {
+  twin_run_id: string;
+  selected_option_id: string;
+  status: "outcome_recorded";
+  outcome: {
+    outcome_id: string;
+    selected_option_id: string;
+    observed_outcome_summary: string;
+    instructor_rating: number;
+    safety_incident: boolean;
+    targeted_state_improvement_estimate: number;
+    aar_notes: string;
+    actor_id: string;
+    recorded_at_utc: string;
+    evidence_bundle_id: string;
+  };
+  lesson_learned: LessonLearned;
+  recorded_at_utc: string;
 }
 
 interface DeploymentRecommendationRequest {
@@ -1327,15 +2051,58 @@ interface DeploymentRecommendationRequest {
   terrain?: string | null;
   weather?: Record<string, unknown>;
   readiness?: Record<string, unknown>;
-  processed_observations?: Array<{
-    kind: string;
-    content: string;
-    artifact_id?: string | null;
-    source_system?: string | null;
-    metadata?: Record<string, unknown>;
-  }>;
+  processed_observations?: ArtifactInput[];
   constraints?: string[];
   require_human_approval?: boolean;
+  decision_context?: Record<string, unknown> | null;
+}
+
+interface DeploymentRecommendationDecision {
+  decision_id: string;
+  deployment_recommendation_id: string;
+  source_twin_run_id: string;
+  selected_option_id?: string | null;
+  actor_id: string;
+  decision: TwinDecision;
+  approved_posture?: DeploymentPosture | null;
+  comment: string;
+  timestamp_utc: string;
+}
+
+interface DeploymentOutcome {
+  outcome_id: string;
+  deployment_recommendation_id: string;
+  source_twin_run_id: string;
+  selected_option_id?: string | null;
+  observed_outcome_summary: string;
+  commander_rating: number;
+  safety_incident: boolean;
+  near_miss: boolean;
+  mission_effectiveness_estimate: number;
+  recommendation_accepted: boolean;
+  recommendation_helpful: boolean;
+  overridden_posture?: DeploymentPosture | null;
+  missed_factor?: string | null;
+  should_have_escalated: boolean;
+  aar_notes: string;
+  actor_id: string;
+  recorded_at_utc: string;
+  controls: string[];
+}
+
+interface DeploymentOptionRecommendation {
+  scenario_option_id: string;
+  title: string;
+  option_type: ScenarioOptionType;
+  recommendation: string;
+  risk_score: number;
+  confidence: number;
+  critic_status: ScenarioCriticStatus;
+  critic_reasons: string[];
+  status: ScenarioOptionStatus;
+  decision_quality: DecisionQualityAssessment;
+  utility_estimate: DecisionUtilityEstimate;
+  reliance_guidance: RelianceGuidance;
 }
 
 interface DeploymentRecommendationResponse {
@@ -1371,46 +2138,33 @@ interface DeploymentRecommendationResponse {
     required_controls: string[];
     evidence_refs: string[];
   }>;
-  decisions: Array<{
-    decision_id: string;
-    selected_option_id?: string | null;
-    actor_id: string;
-    decision: "approved" | "rejected" | "escalated";
-    approved_posture?: DeploymentPosture | null;
-    comment: string;
-    timestamp_utc: string;
-  }>;
-  outcomes: Array<{
-    outcome_id: string;
-    selected_option_id?: string | null;
-    observed_outcome_summary: string;
-    commander_rating: number;
-    safety_incident: boolean;
-    near_miss: boolean;
-    mission_effectiveness_estimate: number;
-    recommendation_accepted: boolean;
-    recommendation_helpful: boolean;
-    missed_factor?: string | null;
-    should_have_escalated: boolean;
-    recorded_at_utc: string;
-  }>;
-  lessons_learned: Array<Record<string, unknown>>;
+  decisions: DeploymentRecommendationDecision[];
+  outcomes: DeploymentOutcome[];
+  lessons_learned: LessonLearned[];
+  agent_trace: AgentStageTrace[];
+  source_refs: SourceReference[];
+  options: DeploymentOptionRecommendation[];
+  decision_quality: DecisionQualityAssessment;
+  utility_estimate: DecisionUtilityEstimate;
+  reliance_guidance: RelianceGuidance;
+  created_at_utc: string;
+  updated_at_utc: string;
 }
 
 interface DeploymentApprovalResponse {
   deployment_recommendation_id: string;
   status: "approved" | "rejected" | "escalated";
-  decision: {
-    decision_id: string;
-    selected_option_id?: string | null;
-    actor_id: string;
-    decision: "approved" | "rejected" | "escalated";
-    approved_posture?: DeploymentPosture | null;
-    comment: string;
-    timestamp_utc: string;
-  };
-  lesson_learned?: Record<string, unknown> | null;
+  decision: DeploymentRecommendationDecision;
+  lesson_learned?: LessonLearned | null;
   decided_at_utc: string;
+}
+
+interface DeploymentOutcomeResponse {
+  deployment_recommendation_id: string;
+  status: "outcome_recorded";
+  outcome: DeploymentOutcome;
+  lesson_learned: LessonLearned;
+  recorded_at_utc: string;
 }
 ```
 
@@ -1423,7 +2177,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       "content-type": "application/json",
-      ...(apiKey ? {"x-api-key": apiKey} : {}),
+      ...(apiKey ? { "x-api-key": apiKey } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -1463,6 +2217,26 @@ const deployment = await apiFetch<DeploymentRecommendationResponse>(
 );
 ```
 
+Create an operational twin run:
+
+```ts
+const twin = await apiFetch<OperationalTwinResponse>(
+  "/v1/operational-twin/runs",
+  {
+    method: "POST",
+    body: JSON.stringify(twinRequest),
+  },
+);
+```
+
+Fetch mission deployment history:
+
+```ts
+const deploymentHistory = await apiFetch<DeploymentRecommendationResponse[]>(
+  `/v1/missions/${missionId}/deployment-recommendations?limit=20`,
+);
+```
+
 Approve a deployment recommendation:
 
 ```ts
@@ -1475,6 +2249,66 @@ const deploymentApproval = await apiFetch<DeploymentApprovalResponse>(
       actor_id: currentUser.id,
       selected_option_id: deployment.platoon_recommendation.recommended_option_id,
       comment: approvalComment,
+    }),
+  },
+);
+```
+
+Capture a deployment outcome:
+
+```ts
+const deploymentOutcome = await apiFetch<DeploymentOutcomeResponse>(
+  `/v1/deployment-recommendations/${deployment.deployment_recommendation_id}/outcome`,
+  {
+    method: "POST",
+    body: JSON.stringify({
+      observed_outcome_summary: outcomeSummary,
+      commander_rating: commanderRating,
+      safety_incident: safetyIncident,
+      near_miss: nearMiss,
+      mission_effectiveness_estimate: missionEffectivenessEstimate,
+      recommendation_accepted: recommendationAccepted,
+      recommendation_helpful: recommendationHelpful,
+      selected_option_id: selectedOptionId,
+      aar_notes: aarNotes,
+      actor_id: currentUser.id,
+    }),
+  },
+);
+```
+
+Record an operational twin option decision:
+
+```ts
+const twinDecision = await apiFetch<ScenarioOptionDecisionResponse>(
+  `/v1/operational-twin/runs/${twin.twin_run_id}/options/${selectedOptionId}/decision`,
+  {
+    method: "POST",
+    body: JSON.stringify({
+      scenario_option_id: selectedOptionId,
+      decision: "approved",
+      actor_id: currentUser.id,
+      comment: decisionComment,
+    }),
+  },
+);
+```
+
+Capture an operational twin outcome:
+
+```ts
+const twinOutcome = await apiFetch<OperationalTwinOutcomeResponse>(
+  `/v1/operational-twin/runs/${twin.twin_run_id}/outcome`,
+  {
+    method: "POST",
+    body: JSON.stringify({
+      selected_option_id: selectedOptionId,
+      observed_outcome_summary: outcomeSummary,
+      instructor_rating: instructorRating,
+      safety_incident: safetyIncident,
+      targeted_state_improvement_estimate: targetedStateImprovement,
+      aar_notes: aarNotes,
+      actor_id: currentUser.id,
     }),
   },
 );
@@ -1566,6 +2400,37 @@ Button logic:
 - If posture is `deploy_with_controls`, require every control to be checked or
   explicitly overridden with rationale.
 
+### Operational Twin Evidence And Trace Panel
+
+Render:
+
+- `artifacts` as processed inputs with kind, source system, timestamp, and
+  controls.
+- `observations` as normalized evidence with subject, kind, confidence, linked
+  source artifact IDs, and timestamp.
+- `environment_state` as weather, terrain, visibility, temperature, wind, and
+  capture time.
+- `state_estimate.state_vector` with bars for fatigue burden, situational
+  clarity, cohesion, leader decision quality, mission tempo risk, and training
+  challenge gap.
+- `state_estimate.uncertainty` as a visible review signal, not debug metadata.
+- `evidence_bundle.policy_checks` as governance badges.
+- `evidence_bundle.hash_chain.current_action_hash` in the trace drawer.
+- `scenario_options` with title, narrative, option type, risk, confidence,
+  critic status, critic reasons, decision quality, utility, and reliance.
+- `agent_trace` as a stage table with provider, model, status, latency, hashes,
+  and fallback reason.
+- `decisions`, `outcomes`, and `lessons_learned` as lifecycle history.
+
+Button logic:
+
+- Show approve/reject/escalate only for options with `status = "draft"`.
+- Disable approve when `critic_status = "reject"`.
+- Require a named actor and comment for every decision.
+- Show outcome capture only after an option is `approved`.
+- Refresh the run after decision or outcome because option statuses, lessons,
+  and hash-chain fields can change.
+
 ### Dashboard Alert Rules
 
 Show prominent alerts when any of these are true:
@@ -1616,7 +2481,12 @@ For production:
 ## Known Backend Gaps The Frontend Must Handle
 
 - Built-in auth is API-key only; it does not provide user identity, roles, or
-  per-mission authorization.
+  per-mission authorization. If `GET /v1/healthz` reports
+  `security.api_key_required = false`, the API is open to any caller that can
+  reach it.
+- Operational twin has create/get/option-decision/outcome endpoints, but no
+  mission-list endpoint yet. Use deployment `source_twin_run_id` links or store
+  recently created twin IDs in the frontend/BFF.
 - Training and deployment enrichment depends on shared projections being
   populated. Retrieval and graph context can create bounded scoring adjustments,
   but broader weather, terrain, qualification, and unit-history transforms are
@@ -1641,3 +2511,15 @@ Build this first:
 This shows the core product: the system helps instructors detect weak signals,
 choose targeted scenario pressure, keep a human gate, and preserve evidence for
 AAR and later lessons learned.
+
+For the current deployed capability, add the deployment/twin slice next:
+
+1. Mission context form with terrain, weather, readiness, target soldier IDs,
+   and processed observations.
+2. Submit to `POST /v1/deployment-recommendations`.
+3. Render platoon posture, individual recommendations, three options, required
+   controls, source refs, and agent trace.
+4. Link `source_twin_run_id` to
+   `GET /v1/operational-twin/runs/{source_twin_run_id}` in an evidence drawer.
+5. Record commander decision through the deployment approval endpoint.
+6. Capture outcome/AAR through the deployment outcome endpoint.
