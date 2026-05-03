@@ -3,7 +3,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from system2.api import create_agent_run, disable, enable, get_agent_run, score, score_v1
+from system2.api import create_agent_run, disable, enable, get_agent_run, record_agent_run_approval, score, score_v1
 from system2.agent_orchestrator import AgentOrchestrator
 from system2.agent_state import InMemoryAgentStateStore, RedisAgentStateStore
 from system2.agent_stack import build_agent_orchestrator
@@ -12,7 +12,7 @@ from system2.audit import AuditLog, validate_hash_chain
 from system2.config import InfraSettings, redact_url
 from system2.data import default_roles, generate_soldiers
 from system2.fairness import counterfactual_flip_audit, fairness_audit, mutual_information_proxy_audit
-from system2.models import AgentRunRequest, AgentRunStatus, ScoreRequest
+from system2.models import AgentApprovalDecision, AgentApprovalRequest, AgentRunRequest, AgentRunStatus, ScoreRequest
 from system2.postgres_agent_store import AGENT_RUNS_SCHEMA_SQL, dump_agent_run, load_agent_run
 from system2.registry import MODEL_VERSIONS
 from system2.graph import LocalGraphContextProvider, cypher_quote, parse_falkordb_rows
@@ -238,6 +238,49 @@ def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:
     assert run.steps[2].evidence["falkordb_configured"] is True
 
 
+def test_agent_orchestrator_records_human_approval() -> None:
+    orchestrator = AgentOrchestrator(repository=InMemoryAgentRunRepository())
+    run = orchestrator.run(
+        AgentRunRequest(score_request=ScoreRequest(mission_id="approval", candidate_count=80, seed=7))
+    )
+
+    approved = orchestrator.record_approval(
+        run.run_id,
+        AgentApprovalRequest(
+            decision=AgentApprovalDecision.approved,
+            approver_id="commander-1",
+            rationale="Reviewed roster, fairness audit, and second choices.",
+        ),
+    )
+
+    assert approved is not None
+    assert approved.status is AgentRunStatus.completed
+    assert approved.approval is not None
+    assert approved.approval.approver_id == "commander-1"
+    assert approved.steps[-1].name == "approval_recorded"
+
+
+def test_agent_orchestrator_records_human_rejection() -> None:
+    orchestrator = AgentOrchestrator(repository=InMemoryAgentRunRepository())
+    run = orchestrator.run(
+        AgentRunRequest(score_request=ScoreRequest(mission_id="rejection", candidate_count=80, seed=7))
+    )
+
+    rejected = orchestrator.record_approval(
+        run.run_id,
+        AgentApprovalRequest(
+            decision=AgentApprovalDecision.rejected,
+            approver_id="commander-1",
+            rationale="Mission constraints changed before finalization.",
+        ),
+    )
+
+    assert rejected is not None
+    assert rejected.status is AgentRunStatus.rejected
+    assert rejected.approval is not None
+    assert rejected.approval.decision is AgentApprovalDecision.rejected
+
+
 def test_agent_run_api_creates_and_fetches_run() -> None:
     run = create_agent_run(
         AgentRunRequest(
@@ -251,6 +294,27 @@ def test_agent_run_api_creates_and_fetches_run() -> None:
     assert fetched == run
     assert fetched.status is AgentRunStatus.awaiting_approval
     assert fetched.recommendation is not None
+
+
+def test_agent_run_api_records_approval() -> None:
+    run = create_agent_run(
+        AgentRunRequest(
+            score_request=ScoreRequest(mission_id="agent-api-approval", candidate_count=80, seed=32),
+            require_human_approval=True,
+        )
+    )
+
+    approved = record_agent_run_approval(
+        run.run_id,
+        AgentApprovalRequest(
+            decision=AgentApprovalDecision.approved,
+            approver_id="commander-2",
+            rationale="Recommendation accepted after review.",
+        ),
+    )
+
+    assert approved.status is AgentRunStatus.completed
+    assert approved.approval is not None
 
 
 def test_agent_run_api_returns_404_for_missing_run() -> None:

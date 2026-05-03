@@ -35,6 +35,7 @@ class AgentRunStatus(str, Enum):
     running = "running"
     awaiting_approval = "awaiting_approval"
     completed = "completed"
+    rejected = "rejected"
     failed = "failed"
 
 
@@ -43,6 +44,11 @@ class AgentStepStatus(str, Enum):
     running = "running"
     completed = "completed"
     failed = "failed"
+
+
+class AgentApprovalDecision(str, Enum):
+    approved = "approved"
+    rejected = "rejected"
 
 
 class StrictBaseModel(BaseModel):
@@ -168,12 +174,26 @@ class AgentStep(StrictBaseModel):
     completed_at: datetime | None = None
 
 
+class AgentApprovalRequest(StrictBaseModel):
+    decision: AgentApprovalDecision
+    approver_id: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+
+
+class AgentApproval(StrictBaseModel):
+    decision: AgentApprovalDecision
+    approver_id: str
+    rationale: str
+    decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class AgentRun(StrictBaseModel):
     run_id: str
     status: AgentRunStatus
     request: AgentRunRequest
     steps: list[AgentStep]
     recommendation: RosterRecommendation | None = None
+    approval: AgentApproval | None = None
     error: str | None = None
     created_at: datetime
     updated_at: datetime

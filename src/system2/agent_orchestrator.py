@@ -7,7 +7,16 @@ from .agent_store import AgentRunRepository, InMemoryAgentRunRepository
 from .agent_tools import graph_context, request_context, retrieval_context, roster_recommendation_tool
 from .config import InfraSettings
 from .graph import GraphContextProvider, LocalGraphContextProvider
-from .models import AgentRun, AgentRunRequest, AgentRunStatus, AgentStep, AgentStepStatus
+from .models import (
+    AgentApproval,
+    AgentApprovalDecision,
+    AgentApprovalRequest,
+    AgentRun,
+    AgentRunRequest,
+    AgentRunStatus,
+    AgentStep,
+    AgentStepStatus,
+)
 from .retrieval import ContextRetriever, LocalContextRetriever
 from .service import SelectionService
 
@@ -112,6 +121,51 @@ class AgentOrchestrator:
 
     def get(self, run_id: str) -> AgentRun | None:
         return self.repository.get(run_id)
+
+    def record_approval(self, run_id: str, request: AgentApprovalRequest) -> AgentRun | None:
+        run = self.repository.get(run_id)
+        if run is None:
+            return None
+        if not self.state_store.acquire_lock(run.run_id):
+            raise RuntimeError("agent run is already locked")
+
+        try:
+            if run.status is not AgentRunStatus.awaiting_approval:
+                raise ValueError("agent run is not awaiting approval")
+            if run.recommendation is None:
+                raise ValueError("agent run has no recommendation to approve")
+
+            approval = AgentApproval(
+                decision=request.decision,
+                approver_id=request.approver_id,
+                rationale=request.rationale,
+            )
+            status = (
+                AgentRunStatus.completed
+                if request.decision is AgentApprovalDecision.approved
+                else AgentRunStatus.rejected
+            )
+            step = _completed_step(
+                "approval_recorded",
+                f"Human decision recorded: {request.decision.value}.",
+                {
+                    "decision": request.decision.value,
+                    "approver_id": request.approver_id,
+                },
+            )
+            stored = self.repository.save(
+                run.model_copy(
+                    update={
+                        "status": status,
+                        "approval": approval,
+                        "steps": [*run.steps, step],
+                    }
+                )
+            )
+            self.state_store.set_status(stored.run_id, status)
+            return stored
+        finally:
+            self.state_store.release_lock(run.run_id)
 
 
 def _completed_step(
