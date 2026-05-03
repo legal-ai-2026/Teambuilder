@@ -506,7 +506,7 @@ def test_operational_twin_agent_loop_with_synthetic_data(tmp_path) -> None:
         training_objective="Train systems thinking under fatigue without increasing general difficulty.",
         artifacts=[
             ArtifactInput(
-                kind="audio",
+                kind="transcript",
                 content=(
                     "Two missed comms acknowledgements in the last 15 minutes. "
                     "Leader handled direct contact but lost the second-order "
@@ -530,8 +530,8 @@ def test_operational_twin_agent_loop_with_synthetic_data(tmp_path) -> None:
                 source_system="instructor_log",
             ),
             ArtifactInput(
-                kind="photo",
-                content="Photo annotation shows civilian movement on the flank.",
+                kind="system1_observation",
+                content="Image-derived System 1 observation shows civilian movement on the flank.",
                 source_system="field_tablet",
             ),
         ],
@@ -599,7 +599,7 @@ def test_operational_twin_uses_openai_agent_runtime_when_configured(tmp_path) ->
             team_id="alpha-agent",
             artifacts=[
                 ArtifactInput(
-                    kind="audio",
+                    kind="transcript",
                     content=(
                         "Leader lost the terrain, timing, support, and civilian "
                         "movement relationship after a delayed comms relay."
@@ -652,7 +652,7 @@ def test_operational_twin_agent_runtime_retries_then_succeeds(tmp_path) -> None:
             team_id="alpha-retry",
             artifacts=[
                 ArtifactInput(
-                    kind="audio",
+                    kind="transcript",
                     content="Leader missed terrain, timing, support, and civilian movement relationships.",
                 ),
                 ArtifactInput(
@@ -834,7 +834,7 @@ OPERATIONAL_TWIN_EVAL_FIXTURES = [
     {
         "name": "normal systems training inject",
         "artifacts": [
-            ArtifactInput(kind="audio", content="Leader missed terrain, timing, support, civilian movement, and delayed comms relay."),
+            ArtifactInput(kind="transcript", content="Leader missed terrain, timing, support, civilian movement, and delayed comms relay."),
             ArtifactInput(kind="sleep_food_log", content="Median team sleep was 4.6 hours.", metadata={"sleep_hours": 4.6}),
         ],
         "expected_title": "Primary option",
@@ -918,7 +918,7 @@ OPERATIONAL_TWIN_EVAL_FIXTURES = [
     {
         "name": "leadership communication",
         "artifacts": [
-            ArtifactInput(kind="audio", content="Subordinate dissent during handoff required a concise backbrief."),
+            ArtifactInput(kind="transcript", content="Subordinate dissent during handoff required a concise backbrief."),
             ArtifactInput(kind="manual_note", content="Coordination friction appeared during role transfer."),
         ],
     },
@@ -959,23 +959,23 @@ OPERATIONAL_TWIN_EVAL_FIXTURES = [
         ],
     },
     {
-        "name": "photo fact",
+        "name": "system1 image-derived fact",
         "artifacts": [
-            ArtifactInput(kind="photo", content="Photo annotation shows civilian movement on the flank."),
+            ArtifactInput(kind="system1_observation", content="Image-derived System 1 observation shows civilian movement on the flank."),
             ArtifactInput(kind="manual_note", content="Leader missed the flank relationship to support timing."),
         ],
     },
     {
-        "name": "document image ocr fact",
+        "name": "processed ocr fact",
         "artifacts": [
-            ArtifactInput(kind="document_image", content="Lane card shows support element timing moved five minutes."),
+            ArtifactInput(kind="ocr_text", content="Lane card shows support element timing moved five minutes."),
             ArtifactInput(kind="manual_note", content="Leader missed the timing change."),
         ],
     },
     {
-        "name": "audio voice fact",
+        "name": "processed transcript fact",
         "artifacts": [
-            ArtifactInput(kind="audio", content="Voice note: missed comms acknowledgement and delayed relay."),
+            ArtifactInput(kind="transcript", content="System 1 transcript: missed comms acknowledgement and delayed relay."),
             ArtifactInput(kind="manual_note", content="Leader updated the plan after the relay issue."),
         ],
     },
@@ -1367,8 +1367,6 @@ def test_infra_settings_default_to_local_backends() -> None:
     assert settings.agentic_provider == "auto"
     assert settings.agentic_max_retries == 1
     assert settings.agentic_timeout_seconds == pytest.approx(45.0)
-    assert settings.stt_provider == "none"
-    assert settings.ocr_provider == "none"
     assert settings.openai_api_key is None
     assert settings.openai_model == "gpt-5.4-mini"
 
@@ -1400,8 +1398,6 @@ def test_infra_settings_parses_openai_agentic_runtime() -> None:
             "SYSTEM2_AGENTIC_PROVIDER": "openai",
             "SYSTEM2_AGENTIC_MAX_RETRIES": "2",
             "SYSTEM2_AGENTIC_TIMEOUT_SECONDS": "30.5",
-            "STT_PROVIDER": "external",
-            "OCR_PROVIDER": "openai",
             "OPENAI_API_KEY": "test-openai-key",
             "OPENAI_MODEL": "gpt-5.4-mini",
             "OPENAI_BASE_URL": "https://api.openai.example/v1",
@@ -1413,8 +1409,6 @@ def test_infra_settings_parses_openai_agentic_runtime() -> None:
     assert settings.agentic_provider == "openai"
     assert settings.agentic_max_retries == 2
     assert settings.agentic_timeout_seconds == pytest.approx(30.5)
-    assert settings.stt_provider == "external"
-    assert settings.ocr_provider == "openai"
     assert settings.openai_api_key == "test-openai-key"
     assert settings.openai_model == "gpt-5.4-mini"
     assert settings.openai_base_url == "https://api.openai.example/v1"
@@ -1422,8 +1416,7 @@ def test_infra_settings_parses_openai_agentic_runtime() -> None:
         "provider": "openai",
         "max_retries": 2,
         "timeout_seconds": 30.5,
-        "stt_provider": "external",
-        "ocr_provider": "openai",
+        "input_boundary": "processed_system1_data",
         "openai_configured": True,
         "openai_model": "gpt-5.4-mini",
         "openai_base_url": "https://api.openai.example/v1",

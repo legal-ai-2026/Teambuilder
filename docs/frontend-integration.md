@@ -107,7 +107,8 @@ Instructor creates or selects mission
 The frontend should have these screens or panels:
 
 - Mission timeline: ordered evidence, recommendations, approvals, outcomes.
-- Evidence panel: voice notes, OCR text, checklist items, weather, terrain, AAR.
+- Evidence panel: processed System 1 observations, transcripts, OCR text,
+  mission context, weather, terrain, AAR, and readiness signals.
 - State panel: primary developmental dimension, likely failure mode, estimates.
 - Recommendation cards: proposed inject, expected effect, risk, confidence,
   rationale, doctrine refs, safety checks, decision readiness, value of
@@ -273,8 +274,9 @@ Frontend capture guidance:
 
 - Generate a stable `evidence_id` client-side if the backend source does not
   provide one yet.
-- Put raw text in `text`. For audio or images, first send a transcript/OCR text
-  result or a short instructor-entered summary.
+- Put processed text in `text`. Audio/image ingestion and STT/OCR belong to
+  System 1; System 2 should receive the resulting transcript, OCR text,
+  observation, or summary with a `source_ref`.
 - Use `source_ref` when evidence already exists in a shared store.
 - Keep evidence records small. One observation per evidence object is easier to
   trace and replay than one large blob.

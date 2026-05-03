@@ -98,9 +98,9 @@ update events, API-key parsing, and CORS/security configuration.
 
 - `mission_id`, `instructor_id`, and `team_id`
 - optional `target_soldier_ids`
-- one or more `TrainingEvidence` objects from voice notes, transcripts, OCR
-  text, checklists, patrol summaries, AARs, weather, terrain, or structured
-  events
+- one or more `TrainingEvidence` objects from processed System 1 observations,
+  transcripts, OCR text, checklists, patrol summaries, AARs, weather, terrain,
+  or structured events
 - optional `AdaptationConstraints` for maximum safety risk, environmental
   stress, and blocked inject types
 
@@ -111,13 +111,14 @@ dimension scores, and an optional `source_ref` for replay.
 `OperationalTwinRequest` accepts:
 
 - `mission_id`, `operator_id`, `mode`, and `team_id`
-- zero or more `ArtifactInput` objects for audio, transcripts, OCR text,
-  telemetry, weather, sleep/food logs, photos, and manual notes
+- zero or more `ArtifactInput` objects for processed System 1 observations,
+  transcripts, OCR text, telemetry, mission context, terrain, weather,
+  sleep/food logs, and manual notes
 - zero or more explicit `ObservationInput` objects
 - optional `environment` context that is normalized into environment state and
   weather observations
 
-The operational twin endpoint separates raw artifacts from atomic
+The operational twin endpoint separates processed evidence records from atomic
 observations, provisional `StateEstimate`, `EvidenceBundle`, draft
 `ScenarioOption` objects, human `OperationalTwinDecision` records, and
 `LessonLearned` outputs. Scenario options always start as `draft`; approval,
@@ -132,6 +133,11 @@ is unavailable in `auto` mode, the endpoint records a fallback stage in
 `agent_trace` and keeps the deterministic output. Stage traces include
 input/output hashes, duration, and fallback reason. Use
 `SYSTEM2_AGENTIC_PROVIDER=deterministic` for offline validation.
+
+System 2 does not perform STT, OCR, or raw media extraction. System 1 owns
+ingest and extraction; System 2 consumes those processed outputs plus mission,
+terrain, weather, readiness, and outcome context to recommend individual or
+platoon deployment/training options.
 
 `ScoreRequest` accepts either:
 

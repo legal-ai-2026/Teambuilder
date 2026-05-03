@@ -94,8 +94,6 @@ operational_twin_service = OperationalTwinService(
     ),
     llm_model=api_settings.openai_model,
     agent_max_retries=api_settings.agentic_max_retries,
-    stt_provider=api_settings.stt_provider,
-    ocr_provider=api_settings.ocr_provider,
 )
 
 

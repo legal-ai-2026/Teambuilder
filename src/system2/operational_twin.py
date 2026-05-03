@@ -58,7 +58,7 @@ _OBSERVATION_KINDS = {
     "telemetry_fact",
     "weather_fact",
     "sleep_food_fact",
-    "photo_fact",
+    "image_fact",
     "manual_note",
 }
 _CRITIC_STATUSES = {"pass", "modify", "escalate", "reject"}
@@ -291,42 +291,11 @@ def load_operational_twin_run(payload: dict[str, Any]) -> OperationalTwinRespons
     return OperationalTwinResponse.model_validate(payload)
 
 
-class TextExtractionProvider(Protocol):
-    provider: str
-
-    def extract_text(self, artifact: ArtifactInput) -> str | None:
-        ...
-
-
-@dataclass(frozen=True)
-class DisabledTextExtractionProvider:
-    provider: str = "none"
-
-    def extract_text(self, artifact: ArtifactInput) -> str | None:
-        return artifact.content
-
-
-@dataclass(frozen=True)
-class DeterministicTextExtractionProvider:
-    provider: str
-
-    def extract_text(self, artifact: ArtifactInput) -> str | None:
-        return artifact.content
-
-
-def build_text_extraction_provider(provider: str) -> TextExtractionProvider:
-    if provider in {"openai", "external"}:
-        return DeterministicTextExtractionProvider(provider=provider)
-    return DisabledTextExtractionProvider()
-
-
 @dataclass(frozen=True)
 class PerceptionAgent:
     llm_client: JsonAgentClient | None = None
     agent_provider: str = "deterministic"
     max_retries: int = 1
-    stt_provider: str = "none"
-    ocr_provider: str = "none"
 
     def run(
         self,
@@ -502,25 +471,16 @@ class OperationalTwinService:
     llm_client: JsonAgentClient | None = None
     llm_model: str = "deterministic"
     agent_max_retries: int = 1
-    stt_provider: str = "none"
-    ocr_provider: str = "none"
     lesson_agent: LessonAgent = field(default_factory=LessonAgent)
 
     def run(self, request: OperationalTwinRequest) -> OperationalTwinResponse:
         artifact_inputs = _artifact_inputs(request)
-        artifact_inputs = _apply_sidecar_extraction(
-            artifact_inputs,
-            stt_provider=self.stt_provider,
-            ocr_provider=self.ocr_provider,
-        )
         artifacts = [_artifact_record(item) for item in artifact_inputs]
         baseline_observations = _observation_records(request, artifacts)
         observations, agent_trace = PerceptionAgent(
             llm_client=self.llm_client,
             agent_provider=self.agent_provider,
             max_retries=self.agent_max_retries,
-            stt_provider=self.stt_provider,
-            ocr_provider=self.ocr_provider,
         ).run(
             request=request,
             artifacts=artifacts,
@@ -1174,34 +1134,6 @@ def _artifact_inputs(request: OperationalTwinRequest) -> list[ArtifactInput]:
     return inputs
 
 
-def _apply_sidecar_extraction(
-    artifacts: Sequence[ArtifactInput],
-    *,
-    stt_provider: str,
-    ocr_provider: str,
-) -> list[ArtifactInput]:
-    stt = build_text_extraction_provider(stt_provider)
-    ocr = build_text_extraction_provider(ocr_provider)
-    updated: list[ArtifactInput] = []
-    for artifact in artifacts:
-        provider: TextExtractionProvider | None = None
-        if artifact.kind in {"audio"}:
-            provider = stt
-        elif artifact.kind in {"document_image", "photo"}:
-            provider = ocr
-        if provider is None or artifact.content:
-            updated.append(artifact)
-            continue
-        extracted = provider.extract_text(artifact)
-        if not extracted:
-            updated.append(artifact)
-            continue
-        metadata = dict(artifact.metadata)
-        metadata["sidecar_extraction_provider"] = provider.provider
-        updated.append(artifact.model_copy(update={"content": extracted, "metadata": metadata}))
-    return updated
-
-
 def _propagate_artifact_controls(
     request: OperationalTwinRequest,
     artifact: ArtifactInput,
@@ -1319,9 +1251,9 @@ def _observations_from_artifacts(
             subject_id="environment" if artifact.kind == "weather" else request.team_id,
         )
         summary = text or _summary_text(artifact.metadata)
-        if artifact.kind in {"ocr_text", "document_image"} and _contains_prompt_injection(summary):
+        if artifact.kind == "ocr_text" and _contains_prompt_injection(summary):
             summary = (
-                "Untrusted OCR/document text contained instruction-like content; "
+                "Untrusted processed OCR text contained instruction-like content; "
                 "retained only as evidence metadata and ignored as instructions."
             )
         content: dict[str, Any] = {
@@ -2402,28 +2334,28 @@ def _policy_findings(
 
 def _observation_kind_for_artifact(kind: str) -> TwinObservationKind:
     return {
-        "audio": "voice_fact",
         "transcript": "voice_fact",
-        "document_image": "ocr_fact",
         "ocr_text": "ocr_fact",
         "telemetry": "telemetry_fact",
         "weather": "weather_fact",
         "sleep_food_log": "sleep_food_fact",
-        "photo": "photo_fact",
         "manual_note": "manual_note",
+        "system1_observation": "manual_note",
+        "mission_context": "manual_note",
+        "terrain": "weather_fact",
     }[kind]
 
 
 def _artifact_confidence(kind: str) -> float:
     return {
         "weather": 0.96,
+        "terrain": 0.94,
+        "mission_context": 0.92,
+        "system1_observation": 0.90,
         "telemetry": 0.90,
         "sleep_food_log": 0.88,
         "ocr_text": 0.86,
-        "document_image": 0.78,
-        "audio": 0.82,
         "transcript": 0.88,
-        "photo": 0.72,
         "manual_note": 0.80,
     }[kind]
 

@@ -284,6 +284,12 @@ Current adaptation evidence source types are `voice_note`, `transcript`,
 `ocr_text`, `checklist`, `patrol_summary`, `aar`, `weather`, `terrain`, and
 `structured_event`.
 
+System 2 consumes processed System 1 evidence and mission context. Raw media
+ingest, STT, OCR, extraction, and KG reasoning belong to System 1; System 2
+uses the resulting observations, transcripts, OCR text, mission information,
+terrain, weather, readiness, and outcome projections to recommend individual or
+platoon deployment/training options.
+
 Current implemented operational twin input:
 
 ```json
@@ -295,8 +301,8 @@ Current implemented operational twin input:
   "training_objective": "Train systems thinking under fatigue.",
   "artifacts": [
     {
-      "kind": "audio",
-      "content": "Two missed comms acknowledgements. Leader lost terrain, timing, support, civilian movement, and delayed comms relay relationships under fatigue."
+      "kind": "system1_observation",
+      "content": "System 1 observation: two missed comms acknowledgements. Leader lost terrain, timing, support, civilian movement, and delayed comms relay relationships under fatigue."
     },
     {
       "kind": "sleep_food_log",

@@ -469,15 +469,15 @@ class GraphIngestResult(StrictBaseModel):
 TwinMode = Literal["training", "mission"]
 
 TwinArtifactKind = Literal[
-    "audio",
     "transcript",
-    "document_image",
     "ocr_text",
     "telemetry",
     "weather",
     "sleep_food_log",
-    "photo",
     "manual_note",
+    "system1_observation",
+    "mission_context",
+    "terrain",
 ]
 
 TwinObservationKind = Literal[
@@ -486,7 +486,7 @@ TwinObservationKind = Literal[
     "telemetry_fact",
     "weather_fact",
     "sleep_food_fact",
-    "photo_fact",
+    "image_fact",
     "manual_note",
 ]
 

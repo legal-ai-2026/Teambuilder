@@ -20,7 +20,6 @@ _BACKENDS = {
 }
 
 _AGENTIC_PROVIDERS = {"auto", "deterministic", "openai"}
-_EXTRACTION_PROVIDERS = {"none", "openai", "external"}
 
 
 def _env_bool(value: str | None, *, default: bool = False) -> bool:
@@ -80,14 +79,6 @@ def _agentic_provider(value: str | None) -> str:
     if selected not in _AGENTIC_PROVIDERS:
         allowed_values = ", ".join(sorted(_AGENTIC_PROVIDERS))
         raise ValueError(f"agentic provider must be one of: {allowed_values}")
-    return selected
-
-
-def _extraction_provider(value: str | None, *, kind: str) -> str:
-    selected = (value or "none").strip().lower()
-    if selected not in _EXTRACTION_PROVIDERS:
-        allowed_values = ", ".join(sorted(_EXTRACTION_PROVIDERS))
-        raise ValueError(f"{kind} provider must be one of: {allowed_values}")
     return selected
 
 
@@ -161,8 +152,6 @@ class InfraSettings:
     agentic_provider: str
     agentic_max_retries: int
     agentic_timeout_seconds: float
-    stt_provider: str
-    ocr_provider: str
     openai_api_key: str | None
     openai_model: str
     openai_base_url: str
@@ -244,8 +233,6 @@ class InfraSettings:
                 default=45.0,
                 name="SYSTEM2_AGENTIC_TIMEOUT_SECONDS",
             ),
-            stt_provider=_extraction_provider(source.get("STT_PROVIDER"), kind="STT"),
-            ocr_provider=_extraction_provider(source.get("OCR_PROVIDER"), kind="OCR"),
             openai_api_key=openai_api_key,
             openai_model=source.get("OPENAI_MODEL", "gpt-5.4-mini"),
             openai_base_url=source.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
@@ -288,8 +275,7 @@ class InfraSettings:
                 "provider": self.agentic_provider,
                 "max_retries": self.agentic_max_retries,
                 "timeout_seconds": self.agentic_timeout_seconds,
-                "stt_provider": self.stt_provider,
-                "ocr_provider": self.ocr_provider,
+                "input_boundary": "processed_system1_data",
                 "openai_configured": self.openai_api_key is not None,
                 "openai_model": self.openai_model,
                 "openai_base_url": redact_url(self.openai_base_url),

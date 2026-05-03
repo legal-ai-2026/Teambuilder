@@ -69,8 +69,6 @@ SYSTEM2_AUDIT_LOG=/var/log/system2/audit.jsonl
 SYSTEM2_AGENTIC_PROVIDER=auto
 SYSTEM2_AGENTIC_MAX_RETRIES=1
 SYSTEM2_AGENTIC_TIMEOUT_SECONDS=45
-STT_PROVIDER=none
-OCR_PROVIDER=none
 OPENAI_API_KEY=replace-me-openai-key
 OPENAI_MODEL=gpt-5.4-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
@@ -106,6 +104,11 @@ state estimation, scenario direction, and critic review. Every run returns
 can see which provider handled each stage. Consequential options stay in draft
 until a human decision is recorded, and approved options can later receive an
 outcome/AAR capture without automatic model learning.
+
+System 2 does not perform STT or OCR. It consumes processed System 1 outputs
+such as observations, transcripts, OCR text, mission context, terrain, weather,
+and readiness signals, then recommends individual or platoon deployment and
+training options for human review.
 
 ## Quick Start
 
@@ -222,8 +225,8 @@ curl -X POST http://127.0.0.1:8000/v1/operational-twin/runs \
     "training_objective": "Train systems thinking under fatigue.",
     "artifacts": [
       {
-        "kind": "audio",
-        "content": "Two missed comms acknowledgements. Leader lost the relationship between terrain, timing, support, civilian movement, and delayed comms relay under fatigue."
+        "kind": "system1_observation",
+        "content": "System 1 observation: two missed comms acknowledgements. Leader lost the relationship between terrain, timing, support, civilian movement, and delayed comms relay under fatigue."
       },
       {
         "kind": "sleep_food_log",

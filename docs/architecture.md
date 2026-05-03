@@ -272,10 +272,11 @@ Every adaptation response includes:
 ## Cognitive Adaptation
 
 `cognitive.py` implements the hackathon-ready vertical slice of the
-developmental loop. It accepts normalized `TrainingEvidence` from voice notes,
-transcripts, OCR text, checklists, patrol summaries, AARs, weather, terrain, or
-structured mission events. The estimator updates a multidimensional learner and
-team state over Army-relevant dimensions:
+developmental loop. It accepts normalized `TrainingEvidence` from processed
+System 1 observations, transcripts, OCR text, checklists, patrol summaries,
+AARs, weather, terrain, or structured mission events. System 2 does not perform
+STT, OCR, or raw media extraction. The estimator updates a multidimensional
+learner and team state over Army-relevant dimensions:
 
 - `sensemaking`
 - `critical_thinking`
