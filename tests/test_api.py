@@ -16,7 +16,7 @@ from system2.api import (
 )
 from system2.agent_orchestrator import AgentOrchestrator
 from system2.agent_state import InMemoryAgentStateStore, RedisAgentStateStore
-from system2.agent_stack import build_agent_orchestrator, build_audit_log
+from system2.agent_stack import build_agent_orchestrator, build_audit_log, build_shared_data_sink
 from system2.agent_store import InMemoryAgentRunRepository
 from system2.audit import (
     POSTGRES_AUDIT_SCHEMA_SQL,
@@ -46,6 +46,12 @@ from system2.graph import LocalGraphContextProvider, cypher_identifier, cypher_q
 from system2.retrieval import PGVECTOR_SCHEMA_SQL, LocalContextRetriever, PgVectorContextRetriever, embedding_literal
 from system2.scoring import feature_hash, role_fit
 from system2.service import SelectionService
+from system2.shared_data import (
+    SHARED_DATA_SCHEMA_SQL,
+    InMemorySharedDataSink,
+    build_context_update_events,
+    build_graph_update_events,
+)
 
 
 def test_score_returns_roster_and_audit() -> None:
@@ -110,6 +116,7 @@ def test_infra_settings_redacts_connection_urls() -> None:
             "AGENT_STATE_BACKEND": "redis",
             "RETRIEVAL_BACKEND": "pgvector",
             "GRAPH_BACKEND": "falkordb",
+            "SHARED_DATA_BACKEND": "postgres",
             "SYSTEM2_AUDIT_LOG": "/var/log/system2/audit.jsonl",
         }
     )
@@ -128,6 +135,7 @@ def test_infra_settings_redacts_connection_urls() -> None:
         "agent_state": "redis",
         "retrieval": "pgvector",
         "graph": "falkordb",
+        "shared_data": "postgres",
     }
     assert redact_url(None) is None
 
@@ -140,6 +148,7 @@ def test_infra_settings_default_to_local_backends() -> None:
     assert settings.audit_backend == "file"
     assert settings.retrieval_backend == "local"
     assert settings.graph_backend == "local"
+    assert settings.shared_data_backend == "memory"
 
 
 def test_infra_settings_supports_graph_stack_env_shape() -> None:
@@ -162,6 +171,7 @@ def test_infra_settings_supports_graph_stack_env_shape() -> None:
     assert settings.agent_state_backend == "redis"
     assert settings.retrieval_backend == "pgvector"
     assert settings.graph_backend == "falkordb"
+    assert settings.shared_data_backend == "postgres"
 
 
 def test_infra_settings_can_load_env_file(tmp_path) -> None:
@@ -239,6 +249,18 @@ def test_postgres_agent_run_payload_round_trips() -> None:
     assert loaded == run
     assert "CREATE TABLE IF NOT EXISTS system2_agent_runs" in AGENT_RUNS_SCHEMA_SQL
     assert "payload jsonb NOT NULL" in AGENT_RUNS_SCHEMA_SQL
+
+
+def test_shared_data_schema_contains_update_and_snapshot_tables() -> None:
+    assert "CREATE TABLE IF NOT EXISTS entity_update_events" in SHARED_DATA_SCHEMA_SQL
+    assert "CREATE TABLE IF NOT EXISTS decision_snapshots" in SHARED_DATA_SCHEMA_SQL
+    assert "input_source_hashes jsonb NOT NULL" in SHARED_DATA_SCHEMA_SQL
+
+
+def test_build_shared_data_sink_uses_memory_by_default() -> None:
+    sink = build_shared_data_sink(InfraSettings.from_env({}))
+
+    assert isinstance(sink, InMemorySharedDataSink)
 
 
 def test_memory_agent_state_tracks_status_and_locks() -> None:
@@ -425,7 +447,11 @@ def test_agent_orchestrator_produces_approval_ready_recommendation() -> None:
 
 
 def test_agent_orchestrator_records_human_approval() -> None:
-    orchestrator = AgentOrchestrator(repository=InMemoryAgentRunRepository())
+    shared_sink = InMemorySharedDataSink()
+    orchestrator = AgentOrchestrator(
+        repository=InMemoryAgentRunRepository(),
+        shared_data_sink=shared_sink,
+    )
     run = orchestrator.run(
         AgentRunRequest(score_request=ScoreRequest(mission_id="approval", candidate_count=80, seed=7))
     )
@@ -444,6 +470,11 @@ def test_agent_orchestrator_records_human_approval() -> None:
     assert approved.approval is not None
     assert approved.approval.approver_id == "commander-1"
     assert approved.steps[-1].name == "approval_recorded"
+    assert len(shared_sink.decision_snapshots) == 1
+    assert shared_sink.decision_snapshots[0]["mission_id"] == "approval"
+    assert len(shared_sink.update_events) == 1
+    assert shared_sink.update_events[0]["operation"] == "approve"
+    assert shared_sink.update_events[0]["event_payload"]["selected_soldier_ids"]
 
 
 def test_agent_orchestrator_records_human_rejection() -> None:
@@ -465,6 +496,52 @@ def test_agent_orchestrator_records_human_rejection() -> None:
     assert rejected.status is AgentRunStatus.rejected
     assert rejected.approval is not None
     assert rejected.approval.decision is AgentApprovalDecision.rejected
+
+
+def test_recommendation_trace_cites_input_sources() -> None:
+    payload = SelectionService().score(
+        ScoreRequest(mission_id="source-refs", candidate_count=80, seed=7, candidate_pool_id="pool-1")
+    )
+
+    refs = {ref.ref: ref for ref in payload.trace.source_refs}
+
+    assert "postgres://missions_current/source-refs" in refs
+    assert "postgres://candidate_pools_current/pool-1" in refs
+    assert "synthetic://system2/generated-candidates/source-refs/7" in refs
+    assert payload.trace.input_source_hashes["postgres://missions_current/source-refs"].startswith("sha256:")
+    assert refs["synthetic://system2/generated-candidates/source-refs/7"].metadata["operational_source"] is False
+
+
+def test_context_and_graph_ingest_events_follow_shared_contract() -> None:
+    context_events = build_context_update_events(
+        [
+            ContextChunkInput(
+                chunk_id="sop-001",
+                source="unit-sop",
+                title="Roster review",
+                content="Roster recommendations require approval.",
+                metadata={"actor_id": "operator-1"},
+            )
+        ]
+    )
+    graph_events = build_graph_update_events(
+        [
+            GraphFactInput(
+                subject="mission-1",
+                predicate="requires_role",
+                object="medic",
+                metadata={"fact_id": "fact-1"},
+            )
+        ]
+    )
+
+    assert context_events[0]["entity_type"] == "policy"
+    assert context_events[0]["operation"] == "observe"
+    assert context_events[0]["actor_id"] == "operator-1"
+    assert context_events[0]["new_source_hash"].startswith("sha256:")
+    assert graph_events[0]["entity_type"] == "graph_fact"
+    assert graph_events[0]["entity_id"] == "fact-1"
+    assert graph_events[0]["event_payload"]["predicate"] == "requires_role"
 
 
 def test_agent_run_api_creates_and_fetches_run() -> None:

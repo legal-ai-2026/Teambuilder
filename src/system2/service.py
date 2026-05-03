@@ -9,6 +9,7 @@ from .models import RosterRecommendation, ScoreRequest, TraceMetadata
 from .narrative import build_assessment
 from .registry import DOD_AI_PRINCIPLES, MODEL_VERSIONS, prompt_hash
 from .scoring import feature_hash, score_matrix, solve_assignment
+from .shared_data import input_source_hashes, score_request_source_refs
 
 
 class SelectionService:
@@ -89,6 +90,13 @@ class SelectionService:
             dod_ai_principles=DOD_AI_PRINCIPLES,
             calibration_bins=calibration_bins(predictions, outcomes),
             disagreement_histogram=disagreement_histogram(primary + secondary),
+        )
+        source_refs = score_request_source_refs(request, soldiers, roles)
+        trace = trace.model_copy(
+            update={
+                "source_refs": source_refs,
+                "input_source_hashes": input_source_hashes(source_refs),
+            }
         )
         recommendation = RosterRecommendation(
             mission_id=request.mission_id,

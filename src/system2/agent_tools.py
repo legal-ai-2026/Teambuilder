@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from .config import InfraSettings
-from .graph import GraphContextProvider
+from .graph import GraphContextProvider, GraphFact
 from .models import AgentRunRequest, RosterRecommendation
-from .retrieval import ContextRetriever
+from .retrieval import ContextRetriever, RetrievedContext
 from .service import SelectionService
+from .shared_data import canonical_hash
 
 
 def request_context(request: AgentRunRequest) -> tuple[str, dict[str, object]]:
@@ -40,6 +41,7 @@ def retrieval_context(settings: InfraSettings, retriever: ContextRetriever) -> t
             "backend": settings.retrieval_backend,
             "retrieved_context_count": len(contexts),
             "sources": [context.source for context in contexts],
+            "source_refs": [_context_source_ref(context) for context in contexts],
             "context_sources": ["assets/feature-spec.md", "request"],
         },
     )
@@ -63,6 +65,7 @@ def graph_context(
             "falkordb_configured": configured,
             "backend": settings.graph_backend,
             "fact_count": len(facts),
+            "source_refs": [_graph_source_ref(fact) for fact in facts],
             "relationship_types": [
                 "soldier_skill",
                 "mission_role",
@@ -79,3 +82,55 @@ def roster_recommendation_tool(
     request: AgentRunRequest,
 ) -> RosterRecommendation:
     return selection_service.score(request.score_request)
+
+
+def _context_source_ref(context: RetrievedContext) -> dict[str, object]:
+    chunk_id = str(context.metadata.get("chunk_id", f"{context.source}:{context.title}"))
+    source_hash = context.metadata.get("source_hash") or canonical_hash(
+        {
+            "source": context.source,
+            "title": context.title,
+            "content": context.content,
+        }
+    )
+    return {
+        "ref": f"pgvector://system2_context_chunks/{chunk_id}",
+        "role": "retrieval_context",
+        "source_hash": str(source_hash),
+        "metadata": {
+            "source": context.source,
+            "title": context.title,
+            "score": context.score,
+        },
+    }
+
+
+def _graph_source_ref(fact: GraphFact) -> dict[str, object]:
+    fact_id = str(
+        fact.metadata.get("fact_id")
+        or canonical_hash(
+            {
+                "subject": fact.subject,
+                "predicate": fact.predicate,
+                "object": fact.object,
+                "metadata": fact.metadata,
+            }
+        ).removeprefix("sha256:")[:16]
+    )
+    return {
+        "ref": f"falkordb://system2/facts/{fact_id}",
+        "role": "graph_fact",
+        "source_hash": canonical_hash(
+            {
+                "subject": fact.subject,
+                "predicate": fact.predicate,
+                "object": fact.object,
+                "metadata": fact.metadata,
+            }
+        ),
+        "metadata": {
+            "subject": fact.subject,
+            "predicate": fact.predicate,
+            "object": fact.object,
+        },
+    }

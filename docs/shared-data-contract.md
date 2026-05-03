@@ -678,8 +678,8 @@ facts, approvals, and drift snapshots.
 | System 2 operation | Endpoint | Postgres writes | pgvector writes | FalkorDB writes | Redis writes |
 |---|---|---|---|---|---|
 | Direct score | `POST /v1/score` | `system2_audit_log`; future `decision_snapshots` | none | none | none |
-| Agent run create | `POST /v1/agent-runs` | `system2_agent_runs`, `system2_audit_log`; future `decision_snapshots` | none | none | `system2:agent-run:{run_id}:status`, lock |
-| Agent approval | `POST /v1/agent-runs/{run_id}/approval` | `system2_agent_runs`, `system2_audit_log`, `entity_update_events`; future `decision_snapshots` | none | optional assignment facts after approval | status update |
+| Agent run create | `POST /v1/agent-runs` | `system2_agent_runs`, `system2_audit_log`, `decision_snapshots` | none | none | `system2:agent-run:{run_id}:status`, lock |
+| Agent approval | `POST /v1/agent-runs/{run_id}/approval` | `system2_agent_runs`, `system2_audit_log`, `entity_update_events` | none | optional assignment facts after approval | status update |
 | Context ingest | `POST /v1/context/chunks` | `system2_context_chunks`, `entity_update_events` | `system2_context_chunks.embedding` | none | optional cache invalidation |
 | Graph fact ingest | `POST /v1/graph/facts` | `entity_update_events` | none | graph facts in `system2` | optional cache invalidation |
 | Kill switch | `POST /admin/disable`, `POST /admin/enable` | `system2_audit_log` | none | none | none |
@@ -719,13 +719,16 @@ When System 2 creates an agent run:
    - `graph_context`
    - `roster_recommendation`
    - `human_approval`
-5. It saves the final run payload with status `awaiting_approval` by default.
-6. It releases the Redis lock.
+5. It attaches source refs to the recommendation trace for request, retrieval,
+   and graph inputs.
+6. It saves the final run payload with status `awaiting_approval` by default.
+7. It writes a `decision_snapshots` row with request hash, input source hashes,
+   output hash, fairness hash, and source refs.
+8. It releases the Redis lock.
 
-The agent run payload should include source refs for each output. The current
-implementation records step evidence; integrated mode should expand that
-evidence to include concrete Postgres row hashes, pgvector chunk IDs, and
-FalkorDB fact IDs.
+The agent run payload includes source refs for each output. Request-local and
+local fallback refs are explicit, so downstream systems can distinguish fully
+resolved operational runs from disconnected/local runs.
 
 ### Agent Approval Or Rejection
 
@@ -743,7 +746,7 @@ When a human approves or rejects a run:
    - `approved` -> `completed`
    - `rejected` -> `rejected`
 6. It updates Redis run status.
-7. It should append an `entity_update_events` row.
+7. It appends an `entity_update_events` row.
 
 Recommended approval event:
 
@@ -779,7 +782,7 @@ When System 2 ingests context chunks:
 
 1. It upserts rows in `system2_context_chunks`.
 2. It stores externally supplied embeddings in `embedding`.
-3. It should append one `entity_update_events` row per chunk.
+3. It appends one `entity_update_events` row per chunk.
 4. It should invalidate any context-cache Redis keys if those are introduced.
 
 Recommended context event:
@@ -812,7 +815,7 @@ metadata to identify the embedding model and source text version.
 When System 2 ingests graph facts:
 
 1. It writes or merges the fact into FalkorDB graph `system2`.
-2. It should append an `entity_update_events` row for each graph fact.
+2. It appends an `entity_update_events` row for each graph fact.
 3. The event payload must include source metadata sufficient to rebuild the
    graph from Postgres if FalkorDB is lost.
 
@@ -862,17 +865,20 @@ The current System 2 implementation already writes:
 - `system2_agent_runs`
 - `system2_audit_log`
 - `system2_context_chunks`
+- `decision_snapshots` for agent-run recommendations
+- `entity_update_events` for approval/rejection, context ingest, and graph
+  ingest
 - FalkorDB facts through `/v1/graph/facts`
 - Redis status and lock keys
+- recommendation `trace.source_refs` and `trace.input_source_hashes`
 
 The following are contract requirements still to implement:
 
-- `entity_update_events` writes for approval, context ingest, graph ingest, and
-  kill-switch changes.
-- `decision_snapshots` writes for direct recommendations and approved agent
-  recommendations.
-- richer `source_refs` attached to each recommendation and agent step.
-- ID-only request resolution through `candidate_pool_id`.
+- `entity_update_events` writes for kill-switch changes.
+- `decision_snapshots` writes for direct `/v1/score` recommendations.
+- ID-only request resolution through `candidate_pool_id`; the field is accepted
+  and cited now, but the service still needs a resolver that loads candidates
+  and roles from shared projections.
 
 ## Postgres Tables
 
@@ -1148,9 +1154,10 @@ Preferred frontend flow:
 5. Authorized user approves or rejects.
 6. Approval/rejection writes a separate update event.
 
-The current System 2 API still accepts explicit candidate arrays. Add
-`candidate_pool_id` support before relying on ID-only frontend requests in
-production.
+The current System 2 API accepts `candidate_pool_id` and explicit candidate
+arrays. Do not rely on ID-only frontend requests in production until the
+candidate-pool resolver loads candidates, roles, training, context, and graph
+facts from shared projections.
 
 ## Implementation Checklist For All Apps
 

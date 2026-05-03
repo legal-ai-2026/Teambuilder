@@ -88,6 +88,7 @@ class RoleRequirement(StrictBaseModel):
 
 class ScoreRequest(StrictBaseModel):
     mission_id: str = "direct-action-raid"
+    candidate_pool_id: str | None = None
     candidate_count: int = Field(default=80, ge=14, le=5000)
     candidates: list[Soldier] | None = None
     seed: int = 42
@@ -139,6 +140,13 @@ class CareerForecast(StrictBaseModel):
     path: list[CareerYear]
 
 
+class SourceReference(StrictBaseModel):
+    ref: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    source_hash: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class TraceMetadata(StrictBaseModel):
     model_versions: dict[str, str]
     feature_hash: str
@@ -148,6 +156,8 @@ class TraceMetadata(StrictBaseModel):
     dod_ai_principles: dict[str, str]
     calibration_bins: list[dict[str, float | int]] = Field(default_factory=list)
     disagreement_histogram: list[dict[str, float | int]] = Field(default_factory=list)
+    source_refs: list[SourceReference] = Field(default_factory=list)
+    input_source_hashes: dict[str, str] = Field(default_factory=dict)
 
 
 class RosterRecommendation(StrictBaseModel):

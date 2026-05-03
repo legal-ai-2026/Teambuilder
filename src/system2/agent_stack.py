@@ -9,6 +9,7 @@ from .graph import FalkorDBGraphContextProvider, LocalGraphContextProvider
 from .postgres_agent_store import PostgresAgentRunRepository
 from .retrieval import LocalContextRetriever, PgVectorContextRetriever
 from .service import SelectionService
+from .shared_data import InMemorySharedDataSink, PostgresSharedDataSink, SharedDataSink
 
 
 def build_agent_orchestrator(
@@ -36,6 +37,7 @@ def build_agent_orchestrator(
             else LocalGraphContextProvider()
         ),
         selection_service=resolved_service,
+        shared_data_sink=build_shared_data_sink(resolved_settings),
         settings=resolved_settings,
     )
 
@@ -55,3 +57,9 @@ def build_audit_log(settings: InfraSettings) -> AuditSink:
     if settings.audit_backend == "postgres" and settings.database_url:
         return PostgresAuditLog(settings.database_url)
     return AuditLog(settings.audit_log_path)
+
+
+def build_shared_data_sink(settings: InfraSettings) -> SharedDataSink:
+    if settings.shared_data_backend == "postgres" and settings.database_url:
+        return PostgresSharedDataSink(settings.database_url)
+    return InMemorySharedDataSink()

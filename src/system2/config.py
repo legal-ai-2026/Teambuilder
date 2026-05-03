@@ -13,6 +13,7 @@ _BACKENDS = {
     "audit": {"file", "postgres"},
     "retrieval": {"local", "pgvector"},
     "graph": {"local", "falkordb"},
+    "shared_data": {"memory", "postgres"},
 }
 
 
@@ -91,6 +92,7 @@ class InfraSettings:
     agent_state_backend: str
     retrieval_backend: str
     graph_backend: str
+    shared_data_backend: str
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "InfraSettings":
@@ -132,6 +134,11 @@ class InfraSettings:
                 default="falkordb" if source.get("FALKORDB_URL") else "local",
                 kind="graph",
             ),
+            shared_data_backend=_backend(
+                source.get("SHARED_DATA_BACKEND"),
+                default="postgres" if database_url else "memory",
+                kind="shared_data",
+            ),
         )
 
     def status(self) -> dict[str, object]:
@@ -157,5 +164,6 @@ class InfraSettings:
                 "agent_state": self.agent_state_backend,
                 "retrieval": self.retrieval_backend,
                 "graph": self.graph_backend,
+                "shared_data": self.shared_data_backend,
             },
         }

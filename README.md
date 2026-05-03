@@ -43,6 +43,7 @@ AGENT_REPOSITORY_BACKEND=postgres
 AGENT_STATE_BACKEND=redis
 RETRIEVAL_BACKEND=pgvector
 GRAPH_BACKEND=falkordb
+SHARED_DATA_BACKEND=postgres
 SYSTEM2_AUDIT_LOG=/var/log/system2/audit.jsonl
 ```
 
@@ -76,10 +77,12 @@ pip install -e ".[dev,infra]"
 ```
 
 With `AGENT_REPOSITORY_BACKEND=postgres`, the app connects to `DATABASE_URL`
-through PgBouncer and initializes the agent-run, audit, and pgvector context
-tables at startup when those backends are enabled. Keep
+through PgBouncer and initializes the agent-run, audit, shared update ledger,
+decision snapshot, and pgvector context tables at startup when those backends
+are enabled. Keep
 `AGENT_REPOSITORY_BACKEND=memory`, `AUDIT_BACKEND=file`, and
-`RETRIEVAL_BACKEND=local` for local runs without Postgres.
+`RETRIEVAL_BACKEND=local`, and `SHARED_DATA_BACKEND=memory` for local runs
+without Postgres.
 
 Before starting against the infrastructure, smoke-test the generated env file:
 
@@ -126,9 +129,11 @@ curl -X POST http://127.0.0.1:8000/v1/agent-runs \
   }'
 ```
 
-The agent workflow records request context, retrieval readiness, graph readiness,
-the deterministic roster recommendation, and the human-approval gate. It does
-not train a model and does not make the final personnel decision.
+The agent workflow records request context, retrieval evidence, graph evidence,
+the deterministic roster recommendation, and the human-approval gate. It writes
+a `decision_snapshots` row for drift comparison when Postgres shared-data
+persistence is enabled. It does not train a model and does not make the final
+personnel decision.
 
 Record the human decision after review:
 
@@ -141,6 +146,10 @@ curl -X POST http://127.0.0.1:8000/v1/agent-runs/RUN_ID/approval \
     "rationale": "Reviewed recommendation, fairness audit, and second choices."
   }'
 ```
+
+Approval and rejection decisions append an `entity_update_events` row. Context
+chunk ingestion and graph fact ingestion also append update events so Systems 1
+and 3 can track exactly what System 2 changed.
 
 Load retrieval context with embeddings generated outside this service:
 
@@ -183,6 +192,8 @@ The agent stack uses these adapters:
   chunks.
 - `FalkorDBGraphContextProvider` for mission, role, skill, unit, policy, and
   assignment graph facts.
+- `PostgresSharedDataSink` for shared `entity_update_events` and
+  `decision_snapshots` records.
 
 All infra adapters are selected by env. Local fallbacks remain available for
 development and tests.

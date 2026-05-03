@@ -16,9 +16,17 @@ from .models import (
     AgentRunStatus,
     AgentStep,
     AgentStepStatus,
+    SourceReference,
 )
 from .retrieval import ContextRetriever, LocalContextRetriever
 from .service import SelectionService
+from .shared_data import (
+    InMemorySharedDataSink,
+    SharedDataSink,
+    attach_source_refs,
+    build_approval_update_event,
+    build_decision_snapshot,
+)
 
 
 class AgentOrchestrator:
@@ -29,6 +37,7 @@ class AgentOrchestrator:
         retriever: ContextRetriever | None = None,
         graph_provider: GraphContextProvider | None = None,
         selection_service: SelectionService | None = None,
+        shared_data_sink: SharedDataSink | None = None,
         settings: InfraSettings | None = None,
     ) -> None:
         self.repository = repository or InMemoryAgentRunRepository()
@@ -36,6 +45,7 @@ class AgentOrchestrator:
         self.retriever = retriever or LocalContextRetriever()
         self.graph_provider = graph_provider or LocalGraphContextProvider()
         self.selection_service = selection_service or SelectionService()
+        self.shared_data_sink = shared_data_sink or InMemorySharedDataSink()
         self.settings = settings or InfraSettings.from_env()
 
     def run(self, request: AgentRunRequest) -> AgentRun:
@@ -58,6 +68,7 @@ class AgentOrchestrator:
             steps.append(_completed_step("graph_context", summary, evidence))
 
             recommendation = roster_recommendation_tool(self.selection_service, request)
+            recommendation = attach_source_refs(recommendation, _step_source_refs(steps))
             steps.append(
                 _completed_step(
                     "roster_recommendation",
@@ -94,6 +105,7 @@ class AgentOrchestrator:
                     }
                 )
             )
+            self.shared_data_sink.record_decision_snapshot(build_decision_snapshot(stored))
             self.state_store.set_status(stored.run_id, status)
             return stored
         except Exception as exc:
@@ -162,6 +174,7 @@ class AgentOrchestrator:
                     }
                 )
             )
+            self.shared_data_sink.append_update_event(build_approval_update_event(stored))
             self.state_store.set_status(stored.run_id, status)
             return stored
         finally:
@@ -184,3 +197,17 @@ def _completed_step(
         started_at=now,
         completed_at=now,
     )
+
+
+def _step_source_refs(steps: list[AgentStep]) -> list[SourceReference]:
+    refs: list[SourceReference] = []
+    for step in steps:
+        raw_refs = step.evidence.get("source_refs", [])
+        if not isinstance(raw_refs, list):
+            continue
+        for raw_ref in raw_refs:
+            if isinstance(raw_ref, SourceReference):
+                refs.append(raw_ref)
+            elif isinstance(raw_ref, dict):
+                refs.append(SourceReference.model_validate(raw_ref))
+    return refs

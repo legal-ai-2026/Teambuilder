@@ -17,6 +17,7 @@ from .models import (
     ScoreRequest,
 )
 from .service import SelectionService
+from .shared_data import build_context_update_events, build_graph_update_events
 
 
 app = FastAPI(
@@ -88,6 +89,8 @@ def record_agent_run_approval(run_id: str, request: AgentApprovalRequest) -> Age
 @app.post("/v1/context/chunks", response_model=ContextIngestResult)
 def ingest_context_chunks(request: ContextIngestRequest) -> ContextIngestResult:
     count = agent_orchestrator.retriever.upsert(request.chunks)
+    for event in build_context_update_events(request.chunks):
+        agent_orchestrator.shared_data_sink.append_update_event(event)
     return ContextIngestResult(
         backend=agent_orchestrator.settings.retrieval_backend,
         chunk_count=count,
@@ -98,6 +101,8 @@ def ingest_context_chunks(request: ContextIngestRequest) -> ContextIngestResult:
 @app.post("/v1/graph/facts", response_model=GraphIngestResult)
 def ingest_graph_facts(request: GraphIngestRequest) -> GraphIngestResult:
     count = agent_orchestrator.graph_provider.upsert(request.facts)
+    for event in build_graph_update_events(request.facts):
+        agent_orchestrator.shared_data_sink.append_update_event(event)
     return GraphIngestResult(backend=agent_orchestrator.settings.graph_backend, fact_count=count)
 
 

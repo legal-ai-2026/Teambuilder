@@ -109,7 +109,11 @@ def migrate_postgres(settings: InfraSettings) -> CheckResult:
 
         service = build_selection_service(settings)
         build_agent_orchestrator(settings=settings, selection_service=service)
-        return CheckResult("postgres_migration", True, "agent, audit, and context tables initialized")
+        return CheckResult(
+            "postgres_migration",
+            True,
+            "agent, audit, shared-data, and context tables initialized",
+        )
     except Exception as exc:
         return CheckResult("postgres_migration", False, str(exc))
 

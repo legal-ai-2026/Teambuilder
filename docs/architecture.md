@@ -66,6 +66,7 @@ The active package is `src/system2/`.
 | `career.py` | Five-year forecast for the top selected candidate |
 | `calibration.py` | Calibration bins and disagreement histogram trace summaries |
 | `audit.py` | Redacted append-only JSONL audit log with hash-chain validation |
+| `shared_data.py` | Shared update ledger, decision snapshot, source-reference, and Postgres sink helpers |
 | `registry.py` | Model version strings, prompt hash, and DoD AI Ethics mapping |
 
 ## API Surface
@@ -163,6 +164,7 @@ Runtime backend selection is environment-driven:
 | Agent state | `AGENT_STATE_BACKEND=redis` | Redis status and locks | In-memory state |
 | Retrieval | `RETRIEVAL_BACKEND=pgvector` | Postgres/pgvector context chunks | Packaged local context |
 | Graph | `GRAPH_BACKEND=falkordb` | FalkorDB graph queries | Request-local graph facts |
+| Shared data | `SHARED_DATA_BACKEND=postgres` | Postgres update events and decision snapshots | In-memory sink |
 
 Postgres remains canonical for durable agent runs and audit records. Redis is
 only ephemeral coordination state. FalkorDB graph facts should be rebuildable
@@ -171,8 +173,8 @@ from canonical records.
 Context ingestion accepts text chunks and optional precomputed embedding
 vectors. This service stores and retrieves those chunks; it does not generate
 embeddings. Graph ingestion accepts derived `(subject, predicate, object)` facts
-for relationship lookup. Both ingestion routes must be protected by the same
-external auth boundary as admin routes.
+for relationship lookup. Both ingestion routes append shared update events and
+must be protected by the same external auth boundary as admin routes.
 
 ## Assignment
 
@@ -217,15 +219,24 @@ Every response includes:
 - DoD AI Ethics mapping
 - calibration bins
 - disagreement histogram
+- source references for mission, candidate, role, retrieval, and graph inputs
+- input source hashes keyed by source reference
 
 Audit logging is hash-chained. The file backend writes redacted JSONL records.
 The Postgres backend writes the same canonical record into `system2_audit_log`.
 Both remove protected attributes and hash clear unit/MOS values before
 persistence.
 
+Agent runs also write `decision_snapshots` for drift checks when shared-data
+persistence is enabled. Human approval or rejection, context ingestion, and
+graph fact ingestion append `entity_update_events` so Systems 1 and 3 can
+consume System 2 changes without scraping mutable run payloads.
+
 ## Cross-System Boundaries
 
-System 1 can supply longitudinal training features through a read model.
-System 3 can receive finalized assignments and deployment outcomes. This service
-should still score a request when those systems are unavailable, as long as the
-request contains the candidate and role data needed for scoring.
+System 1 can supply longitudinal training features through canonical Postgres
+projections, pgvector context, and FalkorDB relationships. System 3 can consume
+approved recommendations and assignment evidence from `entity_update_events`
+and `decision_snapshots`. This service should still score a request when those
+systems are unavailable, as long as the request contains the candidate and role
+data needed for scoring.
