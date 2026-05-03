@@ -12,6 +12,12 @@ pip install -e ".[dev]"
 uvicorn system2.api:app --reload --port 8002
 ```
 
+To load a generated infrastructure env file without exporting every variable:
+
+```bash
+SYSTEM2_ENV_FILE=.env.infra uvicorn system2.api:app --reload --port 8002
+```
+
 Health:
 
 ```bash

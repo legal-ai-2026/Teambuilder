@@ -26,8 +26,8 @@ def build_agent_orchestrator(
             else InMemoryAgentStateStore()
         ),
         retriever=(
-            PgVectorContextRetriever(resolved_settings.database_url)
-            if resolved_settings.retrieval_backend == "pgvector" and resolved_settings.database_url
+            PgVectorContextRetriever(resolved_settings.pgvector_url)
+            if resolved_settings.retrieval_backend == "pgvector" and resolved_settings.pgvector_url
             else LocalContextRetriever()
         ),
         graph_provider=(

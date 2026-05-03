@@ -30,9 +30,9 @@ The application should receive these connections through environment variables:
 
 ```env
 DATABASE_URL=postgresql://app_user:password@pgbouncer.internal:6432/system2
+PGVECTOR_CONNECTION_STRING=postgresql+psycopg://app_user:password@pgbouncer.internal:6432/system2
 REDIS_URL=redis://:password@redis.internal:6379/0
 FALKORDB_URL=redis://:password@falkordb.internal:6379
-PGVECTOR_ENABLED=true
 AUDIT_BACKEND=postgres
 AGENT_REPOSITORY_BACKEND=postgres
 AGENT_STATE_BACKEND=redis
@@ -44,6 +44,13 @@ SYSTEM2_AUDIT_LOG=/var/log/system2/audit.jsonl
 Postgres should remain the canonical store. Redis should be treated as
 disposable cache/coordination state. FalkorDB should hold derived graph state
 that can be rebuilt from canonical Postgres records.
+
+Real connection files should stay out of git. Put the generated infra env file
+in an ignored path such as `.env.infra` and point the app at it:
+
+```bash
+SYSTEM2_ENV_FILE=.env.infra uvicorn system2.api:app --reload
+```
 
 ## Quick Start
 

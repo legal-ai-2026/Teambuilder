@@ -101,6 +101,7 @@ def test_infra_settings_redacts_connection_urls() -> None:
     settings = InfraSettings.from_env(
         {
             "DATABASE_URL": "postgresql://app_user:secret@pgbouncer.internal:6432/system2",
+            "PGVECTOR_CONNECTION_STRING": "postgresql+psycopg://app_user:secret@pgbouncer.internal:6432/system2",
             "REDIS_URL": "redis://:redis_secret@redis.internal:6379/0",
             "FALKORDB_URL": "redis://graph_user:graph_secret@falkordb.internal:6379",
             "PGVECTOR_ENABLED": "true",
@@ -118,6 +119,7 @@ def test_infra_settings_redacts_connection_urls() -> None:
     assert status["postgres"]["configured"] is True
     assert status["postgres"]["pgvector_enabled"] is True
     assert status["postgres"]["url"] == "postgresql://app_user:***@pgbouncer.internal:6432/system2"
+    assert status["postgres"]["pgvector_url"] == "postgresql://app_user:***@pgbouncer.internal:6432/system2"
     assert status["redis"]["url"] == "redis://redis.internal:6379/0"
     assert status["falkordb"]["url"] == "redis://graph_user:***@falkordb.internal:6379"
     assert status["backends"] == {
@@ -138,6 +140,51 @@ def test_infra_settings_default_to_local_backends() -> None:
     assert settings.audit_backend == "file"
     assert settings.retrieval_backend == "local"
     assert settings.graph_backend == "local"
+
+
+def test_infra_settings_supports_graph_stack_env_shape() -> None:
+    settings = InfraSettings.from_env(
+        {
+            "FALKORDB_HOST": "192.168.0.245",
+            "FALKORDB_PORT": "6379",
+            "FALKORDB_URL": "redis://:secret@192.168.0.245:6379",
+            "REDIS_URL": "redis://:secret@192.168.0.250:6379/0",
+            "DATABASE_URL": "postgresql://graphmem:secret@192.168.0.251:5432/graphmem",
+            "PGVECTOR_CONNECTION_STRING": "postgresql+psycopg://graphmem:secret@192.168.0.251:5432/graphmem",
+        }
+    )
+
+    assert settings.database_url == "postgresql://graphmem:secret@192.168.0.251:5432/graphmem"
+    assert settings.pgvector_url == "postgresql://graphmem:secret@192.168.0.251:5432/graphmem"
+    assert settings.pgvector_enabled is True
+    assert settings.audit_backend == "postgres"
+    assert settings.agent_repository_backend == "postgres"
+    assert settings.agent_state_backend == "redis"
+    assert settings.retrieval_backend == "pgvector"
+    assert settings.graph_backend == "falkordb"
+
+
+def test_infra_settings_can_load_env_file(tmp_path) -> None:
+    env_path = tmp_path / "infra.env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "# generated outside the repo",
+                "DATABASE_URL=postgresql://graphmem:secret@192.168.0.251:5432/graphmem",
+                "PGVECTOR_CONNECTION_STRING=postgresql+psycopg://graphmem:secret@192.168.0.251:5432/graphmem",
+                "REDIS_URL='redis://:secret@192.168.0.250:6379/0'",
+                "FALKORDB_URL=\"redis://:secret@192.168.0.245:6379\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = InfraSettings.from_env({"SYSTEM2_ENV_FILE": str(env_path)})
+
+    assert settings.database_url == "postgresql://graphmem:secret@192.168.0.251:5432/graphmem"
+    assert settings.redis_url == "redis://:secret@192.168.0.250:6379/0"
+    assert settings.falkordb_url == "redis://:secret@192.168.0.245:6379"
+    assert settings.retrieval_backend == "pgvector"
 
 
 def test_audit_records_redact_and_validate_hash_chain() -> None:
